@@ -7,7 +7,7 @@ import time
 import mysql.connector
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="MIAA Control Center", layout="wide")
+st.set_page_config(page_title="MIAA Control Center", layout="wide") 
 
 # --- 1. CONFIGURACIÓN DE CONEXIONES (Usando Secrets) ---
 DB_SCADA = {
@@ -118,7 +118,10 @@ with st.container(border=True):
     with c2:
         hora = st.number_input("Hora (0-23)", 0, 23, 8) if modo == "Diario" else 0
     with c3:
-        min_int = st.selectbox("Min/Int", [1, 5, 10, 15, 30, 58], index=2)
+        # Ahora puedes elegir CUALQUIER minuto (0-59) o intervalo
+        min_label = "Minuto exacto (0-59)" if modo == "Diario" else "Intervalo (Minutos)"
+        minuto_val = st.number_input(min_label, min_value=1, max_value=59, value=10)
+    
     with c4:
         if "running" not in st.session_state: st.session_state.running = False
         
@@ -150,4 +153,5 @@ if st.session_state.running:
     time.sleep(10) # Frecuencia de actualización de la página
     st.rerun()
 else:
+
     st.warning("Estatus: DETENIDO")
