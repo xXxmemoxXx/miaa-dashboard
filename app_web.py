@@ -55,162 +55,62 @@ MAPEO_POSTGRES = {
     'FECHA_ACTUALIZACION':             '_Ultima_actualizacion',
 }
 
-def limpiar_numero(valor):
-    if pd.isna(valor) or valor == "": return None
+# --- 4. FUNCIONES DE LÓGICA ---
+def limpiar_dato_postgres(valor):
+    """Limpia comas de miles para evitar el error de Double Precision."""
+    if pd.isna(valor) or valor == "" or str(valor).lower() == "nan":
+        return None
     try:
-        if isinstance(valor, str): return float(valor.replace(',', '').strip())
+        if isinstance(valor, str):
+            limpio = valor.replace(',', '').strip()
+            return float(limpio)
         return float(valor)
-    except: return valor
+    except:
+        return valor
 
-def obtener_gateids(tags):
-    """Busca los IDs de los tags usando los nombres correctos de argumentos."""
-    if not tags:
-        return {}
-        
+def ejecutar_actualizacion():
     try:
-        # Se eliminó la coma extra y se estructuró con 'with' para mayor seguridad
-        with mysql.connector.connect(**DB_SCADA, use_pure=True, autocommit=True) as conn:
-            with conn.cursor() as cursor:
-                format_strings = ','.join(['%s'] * len(tags))
-                query = f"SELECT NAME, GATEID FROM VfiTagRef WHERE NAME IN ({format_strings})"
-                
-                cursor.execute(query, list(tags))
-                return {name: gid for name, gid in cursor.fetchall()}
-                
-    except Exception as e: 
-        print(f"⚠️ Error GATEIDs: {e}")
-        return {}
+        with st.status("🔄 Sincronizando datos...", expanded=True) as status:
+            # Google Sheets
+            df = pd.read_csv(CSV_URL)
+            df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
 
-def obtener_valores_scada(gateids):
-    """Obtiene valores de los últimos 15 min por ID."""
-    if not gateids: 
-        return {}
-        
-    try:
-        # Conexión con los parámetros solicitados y uso de 'with' para auto-cierre
-        with mysql.connector.connect(**DB_SCADA, use_pure=True, autocommit=True) as conn:
-            with conn.cursor() as cursor:
-                ids = list(gateids.values())
-                format_strings = ','.join(['%s'] * len(ids))
-                
-                query = f"""
-                    SELECT GATEID, VALUE 
-                    FROM vfitagnumhistory 
-                    WHERE GATEID IN ({format_strings}) 
-                      AND FECHA >= NOW() - INTERVAL 15 MINUTE 
-                    ORDER BY FECHA DESC
-                """
-                
-                cursor.execute(query, ids)
-                
-                data = {}
-                # Al estar ordenado por FECHA DESC, el primer 'gid' que guardamos
-                # en el diccionario es el más nuevo (el último registrado).
-                for gid, val in cursor.fetchall():
-                    if gid not in data:
-                        data[gid] = val
-                        
-                return data
+            # MySQL Informe
+            pass_my = urllib.parse.quote_plus(DB_INFORME['password'])
+            engine_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{pass_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
+            with engine_my.begin() as conn:
+                conn.execute(text("TRUNCATE TABLE INFORME"))
+                res_cols = conn.execute(text("SHOW COLUMNS FROM INFORME"))
+                db_cols = [r[0] for r in res_cols]
+                df[[c for c in df.columns if c in db_cols]].to_sql('INFORME', con=conn, if_exists='append', index=False)
+            
+            # PostgreSQL (QGIS)
+            pass_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
+            url_pg = f"postgresql+psycopg2://{DB_POSTGRES['user']}:{pass_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}"
+            engine_pg = create_engine(url_pg)
 
-    except Exception as e: 
-        print(f"⚠️ Error SCADA: {e}")
-        return {}
-
-# =================================================================
-# 3. PROCESO DE ACTUALIZACIÓN
-# =================================================================
-
-def ejecutar_actualizacion(app_ref):
-    def ui_upd(val):
-        app_ref.root.after(0, lambda: app_ref.progress.config(value=val))
-        app_ref.root.after(0, lambda: app_ref.lbl_porcentaje.config(text=f"{val}%"))
-
-    try:
-        # FASE 1: GOOGLE SHEETS (10-30%)
-        ui_upd(10)
-        df = pd.read_csv(CSV_URL)
-        df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
-        print(f"✅ Google Sheets: {len(df)} registros leídos.")
-        ui_upd(30)
-
-        # FASE 2: MYSQL INFORME (40-60%)
-        print("💾 Actualizando MySQL...")
-        ui_upd(40)
-        pass_my = urllib.parse.quote_plus(DB_INFORME['password'])
-        # Cambiamos a mysql+mysqlconnector explícitamente
-        engine_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{pass_my}@{DB_INFORME['host']}/{DB_INFORME['database']}", pool_pre_ping=True)
-        
-        with engine_my.begin() as conn:
-            conn.execute(text("TRUNCATE TABLE INFORME"))
-            res_cols = conn.execute(text("SHOW COLUMNS FROM INFORME"))
-            db_cols = [r[0] for r in res_cols]
-            df_to_save = df[[c for c in df.columns if c in db_cols]].copy()
-            df_to_save.to_sql('INFORME', con=conn, if_exists='append', index=False)
-        
-        engine_my.dispose()
-        print("✅ MySQL: Actualizado.")
-        ui_upd(60)
-
-        # --- D. Sincronización PostgreSQL (QGIS) ---
-        ui_upd(80)
-        print("🐘 Conectando a PostgreSQL (QGIS)...")
-
-        # Aseguramos que la contraseña no rompa la URL
-        pass_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
-        url_pg = f"postgresql+psycopg2://{DB_POSTGRES['user']}:{pass_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}"
-
-        # Configuramos el motor con parámetros de estabilidad para ejecutables
-        engine_pg = create_engine(
-            url_pg, 
-            pool_pre_ping=True, 
-            connect_args={'connect_timeout': 10}
-        )
-
-        updates_pg = 0
-        try:
             with engine_pg.connect() as conn:
-                print("🔗 Conexión establecida. Iniciando transacción...")
-                with conn.begin(): 
+                with conn.begin():
                     for _, row in df.iterrows():
-                        id_maestro = str(row['ID']).strip() if 'ID' in row else None
-                        if not id_maestro or id_maestro.lower() == "nan":
-                            continue
-
+                        id_m = str(row['ID']).strip() if 'ID' in row else None
+                        if not id_m or id_m.lower() == "nan": continue
+                        
                         set_clauses = []
-                        params = {"id": id_maestro}
-
+                        params = {"id": id_m}
                         for col_csv, col_pg in MAPEO_POSTGRES.items():
                             if col_csv in df.columns:
-                                val = row[col_csv]
-                                
-                                # Limpieza estricta de datos
-                                if pd.isna(val) or val == "":
-                                    val = None
-                                elif isinstance(val, str):
-                                    val = val.strip()
-                                    clean_val = val.replace(',', '')
-                                    if clean_val.replace('.', '', 1).isdigit():
-                                        try: val = float(clean_val)
-                                        except: pass
-                                
+                                val = limpiar_dato_postgres(row[col_csv])
                                 set_clauses.append(f'"{col_pg}" = :{col_pg}')
                                 params[col_pg] = val
-
+                        
                         if set_clauses:
                             sql = text(f'UPDATE public."Pozos" SET {", ".join(set_clauses)} WHERE "ID" = :id')
-                            res = conn.execute(sql, params)
-                            updates_pg += res.rowcount
+                            conn.execute(sql, params)
 
-                print(f"✅ PostgreSQL: {updates_pg} registros sincronizados.")
-                ui_upd(100)
-
-        except Exception as e:
-            print(f"❌ Error en Postgres: {type(e).__name__} -> {str(e)}")
-        finally:
-            engine_pg.dispose()
-
+            status.update(label="✅ Actualización Exitosa", state="complete")
+            st.toast("MySQL y Postgres sincronizados.", icon="🚀")
     except Exception as e:
-        print(f"❌ Error General: {str(e)}")
+        st.error(f"❌ Error: {e}")
 
 # --- 5. INTERFAZ WEB ---
 st.title("🖥️ MIAA Control Center")
