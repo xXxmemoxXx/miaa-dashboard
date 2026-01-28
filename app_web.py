@@ -55,27 +55,41 @@ MAPEO_POSTGRES = {
     'FECHA_ACTUALIZACION':             '_Ultima_actualizacion',
 }
 
-# --- 4. FUNCIÓN DE ACTUALIZACIÓN ---
+# --- 4. FUNCIONES DE LIMPIEZA Y LÓGICA ---
+def limpiar_dato_postgres(valor):
+    """Quita comas y convierte a float si es necesario para Postgres."""
+    if pd.isna(valor) or valor == "" or str(valor).lower() == "nan":
+        return None
+    try:
+        if isinstance(valor, str):
+            # Quitar comas de miles y espacios
+            limpio = valor.replace(',', '').strip()
+            return float(limpio)
+        return float(valor)
+    except:
+        return valor # Si no es número (ej. 'En servicio'), se queda como está
+
 def ejecutar_actualizacion():
     try:
-        with st.status("🔄 Sincronizando bases de datos...", expanded=True) as status:
-            # Google Sheets
-            st.write("📥 Leyendo Google Sheets...")
+        with st.status("🔄 Iniciando proceso de sincronización...", expanded=True) as status:
+            # FASE 1: GOOGLE SHEETS
+            st.write("📥 Descargando datos de Google Sheets...")
             df = pd.read_csv(CSV_URL)
             df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
 
-            # MySQL Informe
-            st.write("💾 Actualizando MySQL...")
+            # FASE 2: MYSQL INFORME
+            st.write("💾 Actualizando MySQL Informe...")
             pass_my = urllib.parse.quote_plus(DB_INFORME['password'])
             engine_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{pass_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
             with engine_my.begin() as conn:
                 conn.execute(text("TRUNCATE TABLE INFORME"))
                 res_cols = conn.execute(text("SHOW COLUMNS FROM INFORME"))
                 db_cols = [r[0] for r in res_cols]
-                df[[c for c in df.columns if c in db_cols]].to_sql('INFORME', con=conn, if_exists='append', index=False)
+                df_to_save = df[[c for c in df.columns if c in db_cols]].copy()
+                df_to_save.to_sql('INFORME', con=conn, if_exists='append', index=False)
             
-            # PostgreSQL (QGIS)
-            st.write("🐘 Sincronizando PostgreSQL...")
+            # FASE 3: POSTGRESQL (QGIS)
+            st.write("🐘 Sincronizando PostgreSQL (QGIS)...")
             pass_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
             url_pg = f"postgresql+psycopg2://{DB_POSTGRES['user']}:{pass_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}"
             engine_pg = create_engine(url_pg)
@@ -85,35 +99,37 @@ def ejecutar_actualizacion():
                     for _, row in df.iterrows():
                         id_m = str(row['ID']).strip() if 'ID' in row else None
                         if not id_m or id_m.lower() == "nan": continue
+                        
                         set_clauses = []
                         params = {"id": id_m}
                         for col_csv, col_pg in MAPEO_POSTGRES.items():
                             if col_csv in df.columns:
-                                val = row[col_csv]
-                                if pd.isna(val) or val == "": val = None
+                                val = limpiar_dato_postgres(row[col_csv])
                                 set_clauses.append(f'"{col_pg}" = :{col_pg}')
                                 params[col_pg] = val
+                        
                         if set_clauses:
                             sql = text(f'UPDATE public."Pozos" SET {", ".join(set_clauses)} WHERE "ID" = :id')
                             conn.execute(sql, params)
 
-            status.update(label="✅ Sincronización Completa", state="complete")
-            st.toast("¡Datos actualizados en MySQL y Postgres!", icon="🚀")
+            status.update(label="✅ Sincronización Exitosa", state="complete")
+            st.toast("MySQL y Postgres actualizados correctamente.", icon="🚀")
     except Exception as e:
-        st.error(f"❌ Error: {e}")
+        st.error(f"❌ Error crítico: {e}")
 
 # --- 5. INTERFAZ WEB ---
-st.title("🖥️ MIAA Monitor Web - Control Total")
+st.title("🖥️ MIAA Control Center")
 
 with st.container(border=True):
-    st.subheader("Configuración de Tiempo (Hora México)")
+    st.subheader("Panel de Configuración")
     c1, c2, c3, c4 = st.columns(4)
     with c1: modo = st.selectbox("Modo", ["Diario", "Periódico"])
     with c2: hora_in = st.number_input("Hora (0-23)", 0, 23, 12)
-    with c3: min_in = st.number_input("Minuto / Intervalo", 0, 59, 51)
+    with c3: min_in = st.number_input("Minuto / Intervalo", 0, 59, 0)
     with c4:
         if "running" not in st.session_state: st.session_state.running = False
-        if st.button("🛑 PARAR" if st.session_state.running else "▶️ INICIAR", use_container_width=True, type="primary" if st.session_state.running else "secondary"):
+        btn_label = "🛑 PARAR" if st.session_state.running else "▶️ INICIAR"
+        if st.button(btn_label, use_container_width=True, type="primary" if st.session_state.running else "secondary"):
             st.session_state.running = not st.session_state.running
             st.rerun()
 
@@ -135,15 +151,14 @@ if st.session_state.running:
 
     if diff.total_seconds() <= 5:
         ejecutar_actualizacion()
-        time.sleep(10)
-        st.rerun()
+        time.sleep(10); st.rerun()
     
     time.sleep(1); st.rerun()
 else:
-    st.info("Sistema detenido.")
+    st.info("Estatus: Detenido.")
 
-st.divider()
-st.subheader("Mapeos Activos")
-with st.expander("Ver Mapeo SCADA"): st.json(MAPEO_SCADA)
-with st.expander("Ver Mapeo Postgres"): st.json(MAPEO_POSTGRES)
+if st.button("🚀 Forzar Sincronización"): ejecutar_actualizacion()
 
+with st.expander("Ver Mapeos"):
+    st.write("SCADA:", MAPEO_SCADA)
+    st.write("Postgres:", MAPEO_POSTGRES)
