@@ -2109,15 +2109,32 @@ def limpiar_dato_postgres(val):
         except: return val
     return val
 
-def obtener_valores_scada(tags):
+def obtener_gateids(tags):
+    """Busca los IDs de los tags usando los nombres correctos de argumentos."""
+    if not tags:
+        return {}
+        
+    try:
+        # Se eliminó la coma extra y se estructuró con 'with' para mayor seguridad
+        with mysql.connector.connect(**DB_SCADA,) as conn:
+            with conn.cursor(dictionary=True) as cursor:
+                fmt = ','.join(['%s'] * len(tags))
+                cursor.execute(f"SELECT NAME, GATEID FROM VfiTagRef WHERE NAME IN ({fmt})", list(tags))
+                return {r['NAME']: r['GATEID'] for r in cursor.fetchall()}
+                
+    except Exception as e: 
+        print(f"⚠️ Error GATEIDs: {e}")
+        return {}
+    
+def obtener_valores_scada(gateids):
     """Consulta masiva optimizada para 1500+ tags usando historial reciente."""
-    if not tags: return {}
+    if not gateids: return {}
     try:
         with mysql.connector.connect(**DB_SCADA) as conn:
             with conn.cursor(dictionary=True) as cursor:
                 # Paso A: Obtener GATEIDs de los nombres de los tags
-                fmt = ','.join(['%s'] * len(tags))
-                cursor.execute(f"SELECT NAME, GATEID FROM VfiTagRef WHERE NAME IN ({fmt})", list(tags))
+                fmt = ','.join(['%s'] * len(gateids))
+                cursor.execute(f"SELECT NAME, GATEID FROM VfiTagRef WHERE NAME IN ({fmt})", list(gateids))
                 tag_to_id = {r['NAME']: r['GATEID'] for r in cursor.fetchall()}
                 
                 if not tag_to_id: return {}
@@ -2246,3 +2263,4 @@ else:
 
 if st.button("🚀 Forzar Sincronización Manual"):
     ejecutar_actualizacion()
+
