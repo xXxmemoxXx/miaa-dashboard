@@ -13,9 +13,9 @@ zona_local = pytz.timezone('America/Mexico_City')
 st.set_page_config(page_title="MIAA Control Maestro", layout="wide")
 
 # Credenciales
-DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': 'h97_p,NQPo=l', 'database': 'miaamx_telemetria'}
-DB_INFORME = {'host': 'miaa.mx', 'user': 'miaamx_telemetria2', 'password': 'bWkrw1Uum1O&', 'database': 'miaamx_telemetria2'}
-DB_POSTGRES = {'user': 'map_tecnica', 'pass': 'M144.Tec', 'host': 'ti.miaa.mx', 'db': 'qgis', 'port': 5432}
+DB_SCADA = dict(st.secrets["db_scada"])
+DB_INFORME = dict(st.secrets["db_informe"])
+DB_POSTGRES = dict(st.secrets["db_postgres"])
 CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw/gviz/tq?tqx=out:csv&sheet=informe'
 
 # Mapeo Completo Integrado
@@ -2242,6 +2242,7 @@ if st.session_state.running:
     
     time.sleep(1)
     st.rerun()
+
 
 
 
