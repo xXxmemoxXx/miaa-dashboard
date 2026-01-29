@@ -47,6 +47,7 @@ def ejecutar_sincronizacion_total():
     logs = []
     progreso_bar = st.progress(0)
     status_text = st.empty()
+    filas_actualizadas_pg = 0 # Contador de filas para Postgres
     
     try:
         # 1. Google Sheets
@@ -54,7 +55,6 @@ def ejecutar_sincronizacion_total():
         df = pd.read_csv(CSV_URL)
         df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
         
-        # Convertir columna de fecha a datetime de forma segura
         if 'FECHA_ACTUALIZACION' in df.columns:
             df['FECHA_ACTUALIZACION'] = pd.to_datetime(df['FECHA_ACTUALIZACION'], errors='coerce')
         
@@ -75,7 +75,6 @@ def ejecutar_sincronizacion_total():
             for col_excel, tag_name in config.items():
                 val = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
                 if not val.empty:
-                    # Inyectamos el valor numérico
                     df.loc[df['POZOS'] == p_id, col_excel] = round(float(val.values[0]), 2)
         
         conn_s.close()
@@ -88,7 +87,6 @@ def ejecutar_sincronizacion_total():
         eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
         with eng_my.begin() as conn:
             conn.execute(text("TRUNCATE TABLE INFORME"))
-            # Reemplazamos NaT/NaN por None para que MySQL no se queje
             df_sql = df.replace({np.nan: None, pd.NaT: None})
             df_sql.to_sql('INFORME', con=conn, if_exists='append', index=False)
         logs.append("✅ MySQL: Tabla INFORME actualizada.")
@@ -110,28 +108,27 @@ def ejecutar_sincronizacion_total():
                     for csv_col, pg_col in MAPEO_POSTGRES.items():
                         if csv_col in df.columns:
                             raw_val = row[csv_col]
-                            
-                            # LIMPIEZA CRÍTICA PARA POSTGRES
-                            # Si es NaN, NaT o None, asignar None explícito (SQL NULL)
                             if pd.isna(raw_val):
                                 clean_val = None
                             else:
-                                # Si es la fecha, asegurar objeto datetime puro
                                 if pg_col == '_Ultima_actualizacion':
                                     clean_val = raw_val.to_pydatetime() if hasattr(raw_val, 'to_pydatetime') else raw_val
                                 else:
-                                    # Asegurar que los números no sean tipos raros de numpy
                                     clean_val = float(raw_val) if isinstance(raw_val, (int, float, np.number)) else raw_val
                             
                             params[pg_col] = clean_val
                             sets.append(f'"{pg_col}" = :{pg_col}')
                     
                     if sets:
-                        # Ejecutamos el update fila por fila con parámetros limpios
                         query_upd = text(f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id')
-                        conn.execute(query_upd, params)
+                        result = conn.execute(query_upd, params)
+                        # Sumamos las filas afectadas (usualmente 1 por ID)
+                        filas_actualizadas_pg += result.rowcount
         
+        # Mensajes de éxito finales
+        logs.append(f"🐘 Postgres: Tabla POZOS actualizada ({filas_actualizadas_pg} filas).")
         logs.append(f"🚀 SINCRO EXITOSA: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
+        
         progreso_bar.progress(100)
         status_text.empty()
         return logs
