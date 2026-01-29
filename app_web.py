@@ -20,20 +20,13 @@ CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7
 
 # --- MAPEO DE COLUMNAS A POSTGRES ---
 MAPEO_POSTGRES = {
-    'GASTO_(l.p.s.)':                  '_Caudal',
-    'PRESION_(kg/cm2)':                '_Presion',
-    'LONGITUD_DE_COLUMNA':             '_Long_colum',
-    'COLUMNA_DIAMETRO_1':              '_Diam_colum',
-    'TIPO_COLUMNA':                    '_Tipo_colum',
-    'SECTOR_HIDRAULICO':               '_Sector',
-    'NIVEL_DINAMICO_(mts)':            '_Nivel_Din',
-    'NIVEL_ESTATICO_(mts)':            '_Nivel_Est',
-    'EXTRACCION_MENSUAL_(m3)':         '_Vm_estr',
-    'HORAS_DE_OPERACIÓN_DIARIA_(hrs)': '_Horas_op',
-    'DISTRITO_1':                      '_Distrito',
-    'ESTATUS':                         '_Estatus',
-    'TELEMETRIA':                      '_Telemetria',
-    'FECHA_ACTUALIZACION':             '_Ultima_actualizacion'
+    'GASTO_(l.p.s.)': '_Caudal',
+    'PRESION_(kg/cm2)': '_Presion',
+    'LONGITUD_DE_COLUMNA': '_Long_colum',
+    'NIVEL_DINAMICO_(mts)': '_Nivel_Din',
+    'NIVEL_ESTATICO_(mts)': '_Nivel_Est',
+    'FECHA_ACTUALIZACION': '_Ultima_actualizacion'
+}
 }
 MAPEO_SCADA = {
 "P-002": {
@@ -190,6 +183,7 @@ if st.session_state.running:
     
     time.sleep(1)
     st.rerun()
+
 
 
 
