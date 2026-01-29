@@ -41,15 +41,7 @@ MAPEO_SCADA = {
 }
 
 # --- 2. LÓGICA DE PROCESAMIENTO ---
-def limpiar_dato_postgres(val):
-    """Limpia formatos para evitar el error 'Double Precision' en Postgres."""
-    if pd.isna(val) or val == "" or str(val).lower() == "nan": return None
-    if isinstance(val, str):
-        val = val.strip().replace(',', '')
-        try: return float(val)
-        except: return val
-    return val
-    
+
 def ejecutar_sincronizacion_total():
     logs = []
     progreso_bar = st.progress(0)
@@ -60,28 +52,24 @@ def ejecutar_sincronizacion_total():
         status_text.text("Leyendo datos maestros...")
         df = pd.read_csv(CSV_URL)
         df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
+        
+        # Limpieza inicial: Convertir fechas a objetos datetime reales
+        if 'FECHA_ACTUALIZACION' in df.columns:
+            df['FECHA_ACTUALIZACION'] = pd.to_datetime(df['FECHA_ACTUALIZACION'], errors='coerce')
+        
         logs.append(f"✅ Google Sheets: {len(df)} registros leídos.")
         progreso_bar.progress(20)
 
-        # 2. SCADA (Obtención de valores en tiempo real)
+        # 2. SCADA
         status_text.text("Consultando SCADA...")
         conn_s = mysql.connector.connect(**DB_SCADA)
         all_tags = []
         for p_id in MAPEO_SCADA:
             all_tags.extend(MAPEO_SCADA[p_id].values())
         
-        # Consulta de los últimos valores registrados
-        query = f"""
-            SELECT r.NAME, h.VALUE 
-            FROM vfitagnumhistory h 
-            JOIN VfiTagRef r ON h.GATEID = r.GATEID 
-            WHERE r.NAME IN ({','.join(['%s']*len(all_tags))}) 
-            AND h.FECHA >= NOW() - INTERVAL 1 DAY 
-            ORDER BY h.FECHA DESC
-        """
+        query = f"SELECT r.NAME, h.VALUE FROM vfitagnumhistory h JOIN VfiTagRef r ON h.GATEID = r.GATEID WHERE r.NAME IN ({','.join(['%s']*len(all_tags))}) AND h.FECHA >= NOW() - INTERVAL 1 DAY ORDER BY h.FECHA DESC"
         df_scada = pd.read_sql(query, conn_s, params=all_tags).drop_duplicates('NAME')
         
-        # Inyección de valores SCADA al DataFrame principal
         for p_id, config in MAPEO_SCADA.items():
             for col_excel, tag_name in config.items():
                 val = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
@@ -92,33 +80,48 @@ def ejecutar_sincronizacion_total():
         logs.append("🧬 SCADA: Valores inyectados correctamente.")
         progreso_bar.progress(50)
 
-        # 3. MySQL Informe (Escribir datos actualizados)
+        # 3. MySQL Informe
         status_text.text("Actualizando MySQL...")
         p_my = urllib.parse.quote_plus(DB_INFORME['password'])
         eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
         with eng_my.begin() as conn:
             conn.execute(text("TRUNCATE TABLE INFORME"))
+            # Para MySQL, convertimos el DF a algo seguro para SQL
             df.to_sql('INFORME', con=conn, if_exists='append', index=False)
         logs.append("✅ MySQL: Tabla INFORME actualizada.")
         progreso_bar.progress(75)
 
-        # 4. Postgres QGIS (Sincronización de campos técnicos)
+        # 4. Postgres QGIS (Corrección de DatatypeMismatch)
         status_text.text("Sincronizando con QGIS...")
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
         
+        # Pre-procesamiento: Convertir NaN a None para que Postgres reciba NULL
+        df_clean = df.where(pd.notnull(df), None)
+        
         with eng_pg.begin() as conn:
-            for _, row in df.iterrows():
+            for _, row in df_clean.iterrows():
                 id_val = str(row['ID']).strip()
-                if id_val and id_val != "nan":
-                    # Mapeo dinámico para el UPDATE en Postgres
-                    sets = [f'"{pg_col}" = :{pg_col}' for csv_col, pg_col in MAPEO_POSTGRES.items() if csv_col in df.columns]
-                    params = {pg_col: row[csv_col] for csv_col, pg_col in MAPEO_POSTGRES.items() if csv_col in df.columns}
-                    params['id'] = id_val
+                if id_val and id_val != "None" and id_val != "nan":
+                    # Construcción de parámetros segura
+                    params = {'id': id_val}
+                    sets = []
+                    
+                    for csv_col, pg_col in MAPEO_POSTGRES.items():
+                        if csv_col in df_clean.columns:
+                            val = row[csv_col]
+                            # Verificación especial para la columna de fecha
+                            if pg_col == '_Ultima_actualizacion' and val is not None:
+                                # Asegurar que sea un string de fecha o un objeto datetime
+                                if isinstance(val, pd.Timestamp):
+                                    val = val.to_pydatetime()
+                            
+                            params[pg_col] = val
+                            sets.append(f'"{pg_col}" = :{pg_col}')
                     
                     if sets:
-                        sql_upd = f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id'
-                        conn.execute(text(sql_upd), params)
+                        query_upd = text(f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id')
+                        conn.execute(query_upd, params)
         
         logs.append(f"🚀 TODO OK: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
         progreso_bar.progress(100)
@@ -128,7 +131,7 @@ def ejecutar_sincronizacion_total():
     except Exception as e:
         return [f"❌ Error crítico: {str(e)}"]
 
-# --- 3. INTERFAZ (Sin modificaciones) ---
+# --- 3. INTERFAZ ---
 st.title("🖥️ MIAA Control Center")
 
 with st.container(border=True):
@@ -160,4 +163,3 @@ if st.session_state.running:
         st.rerun()
     time.sleep(1)
     st.rerun()
-
