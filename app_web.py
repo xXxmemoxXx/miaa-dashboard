@@ -9,7 +9,7 @@ import pytz
 
 # --- 1. CONFIGURACIÓN ---
 zona_local = pytz.timezone('America/Mexico_City')
-st.set_page_config(page_title="MIAA Control Maestro - FIX TOTAL", layout="wide")
+st.set_page_config(page_title="MIAA FIX - PRIORIDAD SCADA", layout="wide")
 
 # --- 2. CONEXIONES ---
 DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': st.secrets["db_scada"]["password"], 'database': 'miaamx_telemetria'}
@@ -19,36 +19,26 @@ CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7
 
 # --- 3. MAPEOS ---
 MAPEO_SCADA = {
-    "P-002": {
-        "GASTO_(l.p.s.)": "PZ_002_TRC_CAU_INS", 
-        "PRESION_(kg/cm2)": "PZ_002_TRC_PRES_INS"
-    }
+    "P-002": {"GASTO_(l.p.s.)": "PZ_002_TRC_CAU_INS", "PRESION_(kg/cm2)": "PZ_002_TRC_PRES_INS"}
 }
 
 MAPEO_POSTGRES = {
-    'GASTO_(l.p.s.)': '_Caudal', 
-    'PRESION_(kg/cm2)': '_Presion',
-    'LONGITUD_DE_COLUMNA': '_Long_colum', 
-    'NIVEL_DINAMICO': '_Nivel_Din',
-    'ESTATUS': '_Estatus', 
-    'FECHA_ACTUALIZACION': '_Ultima_actualizacion'
+    'GASTO_(l.p.s.)': '_Caudal', 'PRESION_(kg/cm2)': '_Presion',
+    'LONGITUD_DE_COLUMNA': '_Long_colum', 'NIVEL_DINAMICO': '_Nivel_Din',
+    'ESTATUS': '_Estatus', 'FECHA_ACTUALIZACION': '_Ultima_actualizacion'
 }
 
-# --- 4. MOTOR DE DATOS ---
+# --- 4. FUNCIONES DE DATOS ---
 
-def obtener_valor_scada(tags):
+def obtener_scada_directo(tags):
     try:
         conn = mysql.connector.connect(**DB_SCADA)
         cursor = conn.cursor(dictionary=True)
-        fmt = ','.join(['%s'] * len(tags))
-        cursor.execute(f"SELECT NAME, GATEID FROM VfiTagRef WHERE NAME IN ({fmt})", list(tags))
+        cursor.execute(f"SELECT NAME, GATEID FROM VfiTagRef WHERE NAME IN ({','.join(['%s']*len(tags))})", list(tags))
         t_map = {r['NAME']: r['GATEID'] for r in cursor.fetchall()}
         if not t_map: return {}
         
-        ids = list(t_map.values())
-        fmt_ids = ','.join(['%s'] * len(ids))
-        cursor.execute(f"SELECT GATEID, VALUE FROM vfitagnumhistory WHERE GATEID IN ({fmt_ids}) AND FECHA >= NOW() - INTERVAL 1 HOUR ORDER BY FECHA DESC", ids)
-        
+        cursor.execute(f"SELECT GATEID, VALUE FROM vfitagnumhistory WHERE GATEID IN ({','.join(['%s']*len(t_map))}) AND FECHA >= NOW() - INTERVAL 1 HOUR ORDER BY FECHA DESC", list(t_map.values()))
         vals = {}
         for r in cursor.fetchall():
             if r['GATEID'] not in vals: vals[r['GATEID']] = r['VALUE']
@@ -56,76 +46,70 @@ def obtener_valor_scada(tags):
         return {name: vals.get(gid) for name, gid in t_map.items()}
     except: return {}
 
-def ejecutar_sincronizacion_maestra():
+def proceso_sincronizacion_real():
     try:
-        with st.status("🔄 SINCRONIZANDO: PRIORIDAD SCADA", expanded=True) as status:
-            # A. LEER SHEETS (Dato base)
+        with st.status("🛠️ FORZANDO ACTUALIZACIÓN...", expanded=True) as status:
+            # 1. Carga inicial
             df = pd.read_csv(CSV_URL)
             df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
             df['ID'] = df['ID'].astype(str).str.strip()
 
-            # B. OBTENER SCADA
-            tags_scada = [t for p in MAPEO_SCADA.values() for t in p.values()]
-            scada_vals = obtener_valor_scada(tags_scada)
+            # 2. Obtener SCADA
+            tags_necesarios = [t for p in MAPEO_SCADA.values() for t in p.values()]
+            datos_scada = obtener_scada_directo(tags_necesarios)
 
-            # C. FORZAR SOBRESCRITURA EN EL DATAFRAME (Dato Maestro)
+            # 3. ELIMINAR Y REEMPLAZAR (Fuerza bruta sobre el DataFrame)
             for p_id, mapeo in MAPEO_SCADA.items():
-                idx = df[df['ID'] == p_id].index
-                if not idx.empty:
+                if p_id in df['ID'].values:
                     for col_excel, tag_scada in mapeo.items():
-                        v_scada = scada_vals.get(tag_scada)
-                        if v_scada is not None and float(v_scada) > 0:
-                            # SE USA .at PARA CAMBIO INMEDIATO EN MEMORIA
-                            df.at[idx[0], col_excel] = float(v_scada)
-                            st.write(f"✅ POZO {p_id}: Se grabó {v_scada} en memoria para {col_excel}")
+                        v_real = datos_scada.get(tag_scada)
+                        if v_real is not None and float(v_real) > 0:
+                            # Esto asegura que el valor de Sheets (18.8) MUERA en la memoria
+                            df.loc[df['ID'] == p_id, col_excel] = float(v_real)
+                            st.write(f"🔥 PRIORIDAD: {p_id} -> {col_excel} = {v_real} (SCADA)")
 
-            # D. ESCRIBIR EN MYSQL (TABLA INFORME)
-            st.write("💾 Escribiendo en Tabla INFORME (MySQL)...")
+            # 4. MySQL (INFORME)
             p_my = urllib.parse.quote_plus(DB_INFORME['password'])
             eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
             with eng_my.begin() as conn:
                 conn.execute(text("TRUNCATE TABLE INFORME"))
-                # Filtrar solo columnas que existen en la tabla física
-                cols_db = [r[0] for r in conn.execute(text("SHOW COLUMNS FROM INFORME"))]
-                df_mysql = df[df.columns.intersection(cols_db)].copy()
-                df_mysql.to_sql('INFORME', con=conn, if_exists='append', index=False)
+                df.to_sql('INFORME', con=conn, if_exists='append', index=False)
 
-            # E. ESCRIBIR EN POSTGRES (COLUMNAS _Caudal, _Presion, etc.)
-            st.write("🐘 Escribiendo en Postgres (QGIS)...")
+            # 5. POSTGRES (QGIS) - AQUÍ ESTABA EL FALLO
             p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
             eng_pg = create_engine(f"postgresql+psycopg2://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
             with eng_pg.connect() as conn:
                 with conn.begin():
                     for _, row in df.iterrows():
-                        p_id = str(row['ID']).strip()
+                        # Creamos los parámetros DIRECTAMENTE del row procesado
+                        params = {"pid": str(row['ID']).strip()}
                         updates = []
-                        params = {"id": p_id}
-                        for col_csv, col_pg in MAPEO_POSTGRES.items():
-                            if col_csv in df.columns:
-                                val = row[col_csv]
-                                updates.append(f'"{col_pg}" = :{col_pg}')
-                                params[col_pg] = None if pd.isna(val) else val
+                        for c_excel, c_pg in MAPEO_POSTGRES.items():
+                            if c_excel in df.columns:
+                                updates.append(f'"{c_pg}" = :{c_pg}')
+                                params[c_pg] = row[c_excel] if not pd.isna(row[c_excel]) else None
                         
                         if updates:
-                            sql = f'UPDATE public."Pozos" SET {", ".join(updates)} WHERE "ID" = :id'
-                            conn.execute(text(sql), params)
+                            # Ejecución atómica por ID
+                            q = text(f'UPDATE public."Pozos" SET {", ".join(updates)} WHERE "ID" = :pid')
+                            conn.execute(q, params)
             
-            status.update(label="✅ TERMINADO: Bases actualizadas con SCADA", state="complete")
+            status.update(label="✅ SINCRONIZACIÓN TOTAL FINALIZADA", state="complete")
     except Exception as e:
-        st.error(f"Error Crítico: {e}")
+        st.error(f"Error: {e}")
 
-# --- 5. INTERFAZ (RESTABLECIDA CON SEGUNDERO) ---
+# --- 5. INTERFAZ Y SEGUNDERO ---
 st.title("🖥️ MIAA Control Center")
 
 with st.container(border=True):
-    st.subheader("⚙️ Programación de Carga")
+    st.subheader("⚙️ Programación")
     c1, c2, c3, c4 = st.columns(4)
     with c1: modo = st.selectbox("Modo", ["Diario", "Periódico"])
     with c2: h_in = st.number_input("Hora", 0, 23, 13)
-    with c3: m_in = st.number_input("Min/Int", 0, 59, 15)
+    with c3: m_in = st.number_input("Min/Int", 0, 59, 1)
     with c4:
         if "running" not in st.session_state: st.session_state.running = False
-        if st.button("🛑 PARAR" if st.session_state.running else "▶️ INICIAR"):
+        if st.button("🛑 PARAR" if st.session_state.running else "▶️ INICIAR", use_container_width=True):
             st.session_state.running = not st.session_state.running
             st.rerun()
 
@@ -141,25 +125,13 @@ if st.session_state.running:
         else: prox = ahora.replace(minute=prox_m, second=0, microsecond=0)
     
     diff = prox - ahora
-    st.metric("⏳ PRÓXIMA CARGA EN:", str(diff).split('.')[0])
+    st.metric("⏳ SIGUIENTE CARGA EN:", str(diff).split('.')[0])
     st.write(f"🕒 Hora actual: **{ahora.strftime('%H:%M:%S')}**")
     
     if diff.total_seconds() <= 1:
-        ejecutar_sincronizacion_maestra()
+        proceso_sincronizacion_real()
         st.rerun()
     time.sleep(1)
     st.rerun()
-
-t_mon, t_pg, t_val = st.tabs(["🚀 Monitor", "🐘 Postgres", "📈 SCADA"])
-with t_mon:
-    if not st.session_state.running:
-        if st.button("🚀 Ejecutar Manual"): ejecutar_sincronizacion_maestra()
-with t_pg:
-    if st.button("🔍 Ver Tabla Pozos"):
-        p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
-        eng_pg = create_engine(f"postgresql+psycopg2://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
-        st.dataframe(pd.read_sql('SELECT * FROM public."Pozos" ORDER BY "ID"', eng_pg))
-with t_val:
-    if st.button("Consultar P-002"):
-        v = obtener_valor_scada(["PZ_002_TRC_CAU_INS"])
-        st.metric("Caudal SCADA", f"{v.get('PZ_002_TRC_CAU_INS', 0)} lps")
+else:
+    if st.button("🚀 Ejecutar Ahora (Manual)"): proceso_sincronizacion_real()
