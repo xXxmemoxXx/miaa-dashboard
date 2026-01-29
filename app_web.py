@@ -37,33 +37,16 @@ MAPEO_POSTGRES = {
 }
 
 MAPEO_SCADA = {
-"P-002": {
-"GASTO_(l.p.s.)":"PZ_002_TRC_CAU_INS",
-"PRESION_(kg/cm2)":"PZ_002_TRC_PRES_INS",
-"VOLTAJE_L1":"PZ_002_TRC_VOL_L1_L2",
-"VOLTAJE_L2":"PZ_002_TRC_VOL_L2_L3",
-"VOLTAJE_L3":"PZ_002_TRC_VOL_L1_L3",
-"AMP_L1":"PZ_002_TRC_CORR_L1",
-"AMP_L2":"PZ_002_TRC_CORR_L2",
-"AMP_L3":"PZ_002_TRC_CORR_L3",
-"LONGITUD_DE_COLUMNA":"PZ_002_TRC_LONG_COLUM",
-"SUMERGENCIA":"PZ_002_TRC_SUMERG",
-"NIVEL_DINAMICO":"PZ_002_TRC_NIV_EST",
-},
-
-"P-003": {
-"GASTO_(l.p.s.)":"PZ_003_CAU_INS",
-"PRESION_(kg/cm2)":"PZ_003_PRES_INS",
-"VOLTAJE_L1":"PZ_003_VOL_L1_L2",
-"VOLTAJE_L2":"PZ_003_VOL_L2_L3",
-"VOLTAJE_L3":"PZ_003_VOL_L1_L3",
-"AMP_L1":"PZ_003_CORR_L1",
-"AMP_L2":"PZ_003_CORR_L2",
-"AMP_L3":"PZ_003_CORR_L3",
-"LONGITUD_DE_COLUMNA":"PZ_003_LONG_COLUM",
-"SUMERGENCIA":"PZ_003_SUMERG",
-"NIVEL_DINAMICO":"PZ_003_NIV_EST",
-},
+    "P-002": {
+        "GASTO_(l.p.s.)":"PZ_002_TRC_CAU_INS", "PRESION_(kg/cm2)":"PZ_002_TRC_PRES_INS",
+        "VOLTAJE_L1":"PZ_002_TRC_VOL_L1_L2", "AMP_L1":"PZ_002_TRC_CORR_L1",
+        "LONGITUD_DE_COLUMNA":"PZ_002_TRC_LONG_COLUM", "NIVEL_DINAMICO_(mts)":"PZ_002_TRC_NIV_EST",
+    },
+    "P-003": {
+        "GASTO_(l.p.s.)":"PZ_003_CAU_INS", "PRESION_(kg/cm2)":"PZ_003_PRES_INS",
+        "VOLTAJE_L1":"PZ_003_VOL_L1_L2", "AMP_L1":"PZ_003_CORR_L1",
+        "LONGITUD_DE_COLUMNA":"PZ_003_LONG_COLUM", "NIVEL_DINAMICO_(mts)":"PZ_003_NIV_EST",
+    }
 }
 
 # --- 2. LÓGICA DE PROCESAMIENTO ---
@@ -148,7 +131,7 @@ def ejecutar_sincronizacion_total():
                         res = conn.execute(text(f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id'), params)
                         filas_pg += res.rowcount
         
-        logs.append(f"🐘 Postgres: Tabla Pozos actualizada ({filas_pg} filas).")
+        logs.append(f"🐘 Postgres: Tabla POZOS actualizada ({filas_pg} filas).")
         logs.append(f"🚀 SINCRO EXITOSA: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
         progreso_bar.progress(100)
         status_text.empty()
@@ -201,4 +184,3 @@ if st.session_state.running:
     
     time.sleep(1)
     st.rerun()
-
