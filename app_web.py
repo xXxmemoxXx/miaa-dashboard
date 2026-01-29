@@ -11,13 +11,13 @@ import pytz
 zona_local = pytz.timezone('America/Mexico_City')
 st.set_page_config(page_title="MIAA Control Maestro", layout="wide")
 
-# Credenciales de QGIS RESPALDO.py
+# Credenciales (Basadas en tu archivo de respaldo)
 DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': 'h97_p,NQPo=l', 'database': 'miaamx_telemetria'}
 DB_INFORME = {'host': 'miaa.mx', 'user': 'miaamx_telemetria2', 'password': 'bWkrw1Uum1O&', 'database': 'miaamx_telemetria2'}
 DB_POSTGRES = {'user': 'map_tecnica', 'pass': 'M144.Tec', 'host': 'ti.miaa.mx', 'db': 'qgis', 'port': 5432}
 CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw/gviz/tq?tqx=out:csv&sheet=informe'
 
-# Mapeos Completos
+# Mapeos completos para inyección total
 MAPEO_POSTGRES = {
     'GASTO_(l.p.s.)': '_Caudal',
     'PRESION_(kg/cm2)': '_Presion',
@@ -48,15 +48,15 @@ def ejecutar_sincronizacion_total():
     status_text = st.empty()
     
     try:
-        # Paso 1: Google Sheets (15%)
+        # Paso 1: Google Sheets (20%)
         status_text.text("⌛ Leyendo Google Sheets...")
         df = pd.read_csv(CSV_URL)
         df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
-        progreso_bar.progress(15)
+        progreso_bar.progress(20)
         logs.append(f"✅ Google Sheets: {len(df)} registros leídos.")
 
-        # Paso 2: SCADA Real (40%)
-        status_text.text("🧬 Consultando SCADA (Telemetría)...")
+        # Paso 2: SCADA (40%)
+        status_text.text("🧬 Consultando SCADA...")
         conn_s = mysql.connector.connect(**DB_SCADA)
         cur_s = conn_s.cursor(dictionary=True)
         for p_id, config in MAPEO_SCADA.items():
@@ -67,20 +67,20 @@ def ejecutar_sincronizacion_total():
                     df.loc[df['POZOS'] == p_id, col_excel] = round(float(res['VALUE']), 2)
         cur_s.close(); conn_s.close()
         progreso_bar.progress(40)
-        logs.append("🧬 SCADA: Valores inyectados correctamente.")
+        logs.append("🧬 SCADA: Valores inyectados en DataFrame.")
 
-        # Paso 3: MySQL Informe (65%)
-        status_text.text("💾 Actualizando MySQL (miaamx_telemetria2)...")
+        # Paso 3: MySQL (70%)
+        status_text.text("💾 Actualizando MySQL...")
         p_my = urllib.parse.quote_plus(DB_INFORME['password'])
         eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
         with eng_my.begin() as conn:
             conn.execute(text("TRUNCATE TABLE INFORME"))
             df.to_sql('INFORME', con=conn, if_exists='append', index=False)
-        progreso_bar.progress(65)
+        progreso_bar.progress(70)
         logs.append("✅ MySQL: Tabla INFORME actualizada.")
 
-        # Paso 4: Postgres QGIS Completo (100%)
-        status_text.text("🐢 Sincronizando todo el mapeo en PostgreSQL (QGIS)...")
+        # Paso 4: Postgres QGIS (100%)
+        status_text.text("🐢 Sincronizando PostgreSQL (QGIS)...")
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
         
@@ -92,8 +92,7 @@ def ejecutar_sincronizacion_total():
                     update_fields = []
                     for col_csv, col_pg in MAPEO_POSTGRES.items():
                         if col_csv in df.columns:
-                            val = row[col_csv]
-                            params[col_pg] = None if pd.isna(val) else val
+                            params[col_pg] = row[col_csv]
                             update_fields.append(f'"{col_pg}" = :{col_pg}')
                     
                     if update_fields:
@@ -101,15 +100,14 @@ def ejecutar_sincronizacion_total():
                         conn.execute(text(query), params)
         
         progreso_bar.progress(100)
-        status_text.markdown("🚀 **¡Carga completada con éxito!**")
-        logs.append("✅ Postgres: Mapeo completo actualizado en QGIS.")
+        status_text.text("🚀 ¡Carga completada!")
+        logs.append("✅ Postgres: Base de datos QGIS actualizada.")
         logs.append(f"🚀 TODO OK: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
         return logs
 
     except Exception as e:
         progreso_bar.empty()
-        status_text.error(f"Error: {e}")
-        return [f"❌ Error crítico: {e}"]
+        return [f"❌ Error crítico: {str(e)}"]
 
 # --- 3. INTERFAZ ---
 st.title("🖥️ MIAA Control Center")
@@ -128,12 +126,12 @@ with st.container(border=True):
         if st.button("🚀 FORZAR CARGA", use_container_width=True):
             st.session_state.last_logs = ejecutar_sincronizacion_total()
 
-log_txt = "<br>".join(st.session_state.get('last_logs', ["SISTEMA LISTO..."]))
+# Consola con iconos y colores correctos
+log_txt = "<br>".join(st.session_state.get('last_logs', ["SISTEMA EN ESPERA..."]))
 st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:250px;overflow-y:auto;border-radius:5px;line-height:1.6;">{log_txt}</div>', unsafe_allow_html=True)
 
 if st.session_state.running:
     ahora = datetime.datetime.now(zona_local)
-    # Lógica de cálculo simplificada para evitar saturación de memoria
     prox_m = ((ahora.minute // m_in) + 1) * m_in
     prox = ahora.replace(minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=prox_m)
     diff = prox - ahora
