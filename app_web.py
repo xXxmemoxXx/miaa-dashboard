@@ -148,7 +148,7 @@ def ejecutar_sincronizacion_total():
                         res = conn.execute(text(f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id'), params)
                         filas_pg += res.rowcount
         
-        logs.append(f"🐘 Postgres: Tabla POZOS actualizada ({filas_pg} filas).")
+        logs.append(f"🐘 Postgres: Tabla Pozos actualizada ({filas_pg} filas).")
         logs.append(f"🚀 SINCRO EXITOSA: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
         progreso_bar.progress(100)
         status_text.empty()
@@ -201,3 +201,4 @@ if st.session_state.running:
     
     time.sleep(1)
     st.rerun()
+
