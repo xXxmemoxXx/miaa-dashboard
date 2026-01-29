@@ -48,56 +48,68 @@ def ejecutar_sincronizacion_total():
     status_text = st.empty()
     
     try:
-        # 1. Google Sheets (Permanece igual)
-        status_text.text("⌛ Leyendo Google Sheets...")
+        # 1. Google Sheets
+        status_text.text("Leyendo datos maestros...")
         df = pd.read_csv(CSV_URL)
         df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
+        logs.append(f"✅ Google Sheets: {len(df)} registros leídos.")
         progreso_bar.progress(20)
-        logs.append(f"✅ Google Sheets leídos.")
 
-        # 2. SCADA OPTIMIZADO (50%)
-        status_text.text("🧬 Consultando SCADA (Modo Rápido)...")
+        # 2. SCADA (Inyección masiva y rápida)
+        status_text.text("Consultando SCADA...")
         conn_s = mysql.connector.connect(**DB_SCADA)
-        
-        # Extraemos todos los nombres de los tags del mapeo
+        # Extraemos todos los tags necesarios para una sola consulta
         all_tags = []
         for p_id in MAPEO_SCADA:
             all_tags.extend(MAPEO_SCADA[p_id].values())
         
-        # CONSULTA ÚNICA: Trae el último valor de todos los tags a la vez
-        query_scada = """
-            SELECT r.NAME, h.VALUE 
-            FROM vfitagnumhistory h 
-            JOIN VfiTagRef r ON h.GATEID = r.GATEID 
-            WHERE r.NAME IN ({}) 
-            AND h.FECHA >= NOW() - INTERVAL 1 DAY
-            ORDER BY h.FECHA DESC
-        """.format(','.join(['%s'] * len(all_tags)))
+        query = f"SELECT r.NAME, h.VALUE FROM vfitagnumhistory h JOIN VfiTagRef r ON h.GATEID = r.GATEID WHERE r.NAME IN ({','.join(['%s']*len(all_tags))}) AND h.FECHA >= NOW() - INTERVAL 1 DAY ORDER BY h.FECHA DESC"
+        df_scada = pd.read_sql(query, conn_s, params=all_tags).drop_duplicates('NAME')
         
-        df_scada = pd.read_sql(query_scada, conn_s, params=all_tags)
-        # Eliminamos duplicados para quedarnos solo con el más reciente de cada tag
-        df_scada = df_scada.drop_duplicates(subset=['NAME'])
-        
-        # Inyectamos los datos en el DataFrame principal de forma masiva
         for p_id, config in MAPEO_SCADA.items():
             for col_excel, tag_name in config.items():
-                valor = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
-                if not valor.empty:
-                    df.loc[df['POZOS'] == p_id, col_excel] = round(float(valor.values[0]), 2)
+                val = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
+                if not val.empty:
+                    df.loc[df['POZOS'] == p_id, col_excel] = round(float(val.values[0]), 2)
         
         conn_s.close()
+        logs.append("🧬 SCADA: Valores inyectados en DataFrame.")
         progreso_bar.progress(50)
-        logs.append("🧬 SCADA: Sincronización rápida completada.")
 
-        # 3. MySQL y 4. Postgres (Mismo flujo pero con inyección total)
-        # ... (aquí sigue el código de actualización de MySQL y Postgres)
+        # 3. MySQL Informe
+        status_text.text("Actualizando MySQL...")
+        logs.append("💾 Actualizando tabla INFORME en MySQL...")
+        p_my = urllib.parse.quote_plus(DB_INFORME['password'])
+        eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
+        with eng_my.begin() as conn:
+            conn.execute(text("TRUNCATE TABLE INFORME"))
+            df.to_sql('INFORME', con=conn, if_exists='append', index=False)
+        logs.append("✅ MySQL: Tabla INFORME actualizada.")
+        progreso_bar.progress(75)
+
+        # 4. Postgres QGIS (Inyectando todo el mapeo_postgres)
+        status_text.text("Sincronizando con QGIS...")
+        logs.append("🐢 Sincronizando PostgreSQL (QGIS)...")
+        p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
+        eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
         
-        status_text.markdown("🚀 **¡Proceso completado!**")
-        logs.append("✅ Postgres: Mapeo total actualizado en QGIS.")
+        with eng_pg.begin() as conn:
+            for _, row in df.iterrows():
+                id_val = str(row['ID']).strip()
+                if id_val and id_val != "nan":
+                    # Construye el UPDATE con todos los campos del mapeo_postgres
+                    sets = [f'"{pg_col}" = :{pg_col}' for csv_col, pg_col in MAPEO_POSTGRES.items() if csv_col in df.columns]
+                    params = {pg_col: row[csv_col] for csv_col, pg_col in MAPEO_POSTGRES.items() if csv_col in df.columns}
+                    params['id'] = id_val
+                    conn.execute(text(f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id'), params)
+        
+        logs.append(f"🚀 TODO OK: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
+        progreso_bar.progress(100)
+        status_text.empty()
         return logs
 
     except Exception as e:
-        return [f"❌ Error: {str(e)}"]
+        return [f"❌ Error crítico: {str(e)}"]
 
 # --- 3. INTERFAZ ---
 st.title("🖥️ MIAA Control Center")
@@ -132,4 +144,5 @@ if st.session_state.running:
         st.rerun()
     time.sleep(1)
     st.rerun()
+
 
