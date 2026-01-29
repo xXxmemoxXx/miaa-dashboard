@@ -2208,8 +2208,8 @@ st.title("🖥️ MIAA Control Center")
 with st.container(border=True):
     c1, c2, c3, c4, c5 = st.columns([1.5, 1, 1, 1.5, 1.5])
     with c1: modo = st.selectbox("Modo", ["Diario", "Periódico"], index=0, on_change=reset_console)
-    with c2: h_in = st.number_input("Hora", 0, 23, value=12, on_change=reset_console)
-    with c3: m_in = st.number_input("Min/Int", 1, 59, value=30, on_change=reset_console)
+    with c2: h_in = st.number_input("Hora", 0, 23, value=0, on_change=reset_console)
+    with c3: m_in = st.number_input("Min/Int", 1, 59, value=0, on_change=reset_console)
     with c4:
         if "running" not in st.session_state: st.session_state.running = False
         btn_label = "🛑 PARAR" if st.session_state.running else "▶️ INICIAR"
@@ -2245,6 +2245,7 @@ if st.session_state.running:
     
     time.sleep(1)
     st.rerun()
+
 
 
 
