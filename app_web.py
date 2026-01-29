@@ -12,13 +12,12 @@ import numpy as np
 zona_local = pytz.timezone('America/Mexico_City')
 st.set_page_config(page_title="MIAA Control Maestro", layout="wide")
 
-# Credenciales (Basadas en app_web.py)
+# Credenciales consistentes con tu archivo original
 DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': 'h97_p,NQPo=l', 'database': 'miaamx_telemetria'}
 DB_INFORME = {'host': 'miaa.mx', 'user': 'miaamx_telemetria2', 'password': 'bWkrw1Uum1O&', 'database': 'miaamx_telemetria2'}
 DB_POSTGRES = {'user': 'map_tecnica', 'pass': 'M144.Tec', 'host': 'ti.miaa.mx', 'db': 'qgis', 'port': 5432}
 CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw/gviz/tq?tqx=out:csv&sheet=informe'
 
-# --- MAPEO DE COLUMNAS A POSTGRES ---
 MAPEO_POSTGRES = {
     'GASTO_(l.p.s.)': '_Caudal',
     'PRESION_(kg/cm2)': '_Presion',
@@ -29,43 +28,22 @@ MAPEO_POSTGRES = {
 }
 
 MAPEO_SCADA = {
-"P-002": {
-"GASTO_(l.p.s.)":"PZ_002_TRC_CAU_INS",
-"PRESION_(kg/cm2)":"PZ_002_TRC_PRES_INS",
-"VOLTAJE_L1":"PZ_002_TRC_VOL_L1_L2",
-"VOLTAJE_L2":"PZ_002_TRC_VOL_L2_L3",
-"VOLTAJE_L3":"PZ_002_TRC_VOL_L1_L3",
-"AMP_L1":"PZ_002_TRC_CORR_L1",
-"AMP_L2":"PZ_002_TRC_CORR_L2",
-"AMP_L3":"PZ_002_TRC_CORR_L3",
-"LONGITUD_DE_COLUMNA":"PZ_002_TRC_LONG_COLUM",
-"SUMERGENCIA":"PZ_002_TRC_SUMERG",
-"NIVEL_DINAMICO":"PZ_002_TRC_NIV_EST",
-},
-
-"P-003": {
-"GASTO_(l.p.s.)":"PZ_003_CAU_INS",
-"PRESION_(kg/cm2)":"PZ_003_PRES_INS",
-"VOLTAJE_L1":"PZ_003_VOL_L1_L2",
-"VOLTAJE_L2":"PZ_003_VOL_L2_L3",
-"VOLTAJE_L3":"PZ_003_VOL_L1_L3",
-"AMP_L1":"PZ_003_CORR_L1",
-"AMP_L2":"PZ_003_CORR_L2",
-"AMP_L3":"PZ_003_CORR_L3",
-"LONGITUD_DE_COLUMNA":"PZ_003_LONG_COLUM",
-"SUMERGENCIA":"PZ_003_SUMERG",
-"NIVEL_DINAMICO":"PZ_003_NIV_EST",
-},
-
-
-
-
+    "P-002": {
+        "GASTO_(l.p.s.)":"PZ_002_TRC_CAU_INS", "PRESION_(kg/cm2)":"PZ_002_TRC_PRES_INS",
+        "VOLTAJE_L1":"PZ_002_TRC_VOL_L1_L2", "AMP_L1":"PZ_002_TRC_CORR_L1",
+        "LONGITUD_DE_COLUMNA":"PZ_002_TRC_LONG_COLUM", "NIVEL_DINAMICO_(mts)":"PZ_002_TRC_NIV_EST",
+    },
+    "P-003": {
+        "GASTO_(l.p.s.)":"PZ_003_CAU_INS", "PRESION_(kg/cm2)":"PZ_003_PRES_INS",
+        "VOLTAJE_L1":"PZ_003_VOL_L1_L2", "AMP_L1":"PZ_003_CORR_L1",
+        "LONGITUD_DE_COLUMNA":"PZ_003_LONG_COLUM", "NIVEL_DINAMICO_(mts)":"PZ_003_NIV_EST",
+    }
 }
 
-# --- 2. LÓGICA DE PROCESAMIENTO ---
+# --- 2. LÓGICA DE PROCESAMIENTO (Igual que Forzar Carga) ---
 
 def ejecutar_sincronizacion_total():
-    # LIMPIEZA DE CONSOLA AL INICIAR
+    # Paso crítico: Limpiar logs de sesión al inicio para refrescar la consola
     st.session_state.last_logs = [] 
     logs = []
     progreso_bar = st.progress(0)
@@ -73,6 +51,7 @@ def ejecutar_sincronizacion_total():
     filas_pg = 0
     
     try:
+        # 1. Google Sheets
         status_text.text("Leyendo datos maestros...")
         df = pd.read_csv(CSV_URL)
         df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
@@ -81,6 +60,7 @@ def ejecutar_sincronizacion_total():
         logs.append(f"✅ Google Sheets: {len(df)} registros leídos.")
         progreso_bar.progress(20)
 
+        # 2. SCADA
         status_text.text("Consultando SCADA...")
         conn_s = mysql.connector.connect(**DB_SCADA)
         all_tags = []
@@ -98,6 +78,7 @@ def ejecutar_sincronizacion_total():
         logs.append("🧬 SCADA: Valores inyectados correctamente.")
         progreso_bar.progress(50)
 
+        # 3. MySQL
         status_text.text("Actualizando MySQL...")
         p_my = urllib.parse.quote_plus(DB_INFORME['password'])
         eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
@@ -108,6 +89,7 @@ def ejecutar_sincronizacion_total():
         logs.append("✅ MySQL: Tabla INFORME actualizada.")
         progreso_bar.progress(75)
 
+        # 4. Postgres (QGIS)
         status_text.text("Sincronizando con QGIS...")
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
@@ -141,10 +123,11 @@ def ejecutar_sincronizacion_total():
         return [f"❌ Error crítico: {str(e)}"]
 
 # --- 3. INTERFAZ ---
-st.title("🖥️ MIAA Control Center")
 
 def reset_console():
-    st.session_state.last_logs = ["SISTEMA EN ESPERA (Configuración actualizada)..."]
+    st.session_state.last_logs = ["SISTEMA EN ESPERA (Nueva hora programada)..."]
+
+st.title("🖥️ MIAA Control Center")
 
 with st.container(border=True):
     c1, c2, c3, c4, c5 = st.columns([1.5, 1, 1, 1.5, 1.5])
@@ -161,9 +144,11 @@ with st.container(border=True):
         if st.button("🚀 FORZAR CARGA", use_container_width=True):
             st.session_state.last_logs = ejecutar_sincronizacion_total()
 
+# Consola
 log_txt = "<br>".join(st.session_state.get('last_logs', ["SISTEMA EN ESPERA..."]))
 st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:250px;overflow-y:auto;border-radius:5px;line-height:1.6;">{log_txt}</div>', unsafe_allow_html=True)
 
+# --- 4. RELOJ DE EJECUCIÓN UNIFICADO ---
 if st.session_state.running:
     ahora = datetime.datetime.now(zona_local)
     if modo == "Diario":
@@ -177,14 +162,10 @@ if st.session_state.running:
     diff = prox - ahora
     st.metric("⏳ PRÓXIMA CARGA EN:", str(diff).split('.')[0])
     
+    # La ejecución automática ahora llama exactamente al mismo proceso que el botón
     if diff.total_seconds() <= 1:
         st.session_state.last_logs = ejecutar_sincronizacion_total()
         st.rerun()
     
     time.sleep(1)
     st.rerun()
-
-
-
-
-
