@@ -2,4 +2,6 @@ streamlit
 pandas
 sqlalchemy
 mysql-connector-python
+gspread
 psycopg2-binary
+google-auth
