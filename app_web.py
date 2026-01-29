@@ -9,33 +9,32 @@ import pytz
 
 # --- 1. CONFIGURACIÓN ---
 zona_local = pytz.timezone('America/Mexico_City')
-st.set_page_config(page_title="MIAA Control Maestro - Web Version", layout="wide")
+st.set_page_config(page_title="MIAA Engine", layout="wide")
 
-# Credenciales (Fieles a tu archivo de respaldo)
+# Credenciales desde Secrets (Asegúrate de tenerlas configuradas en Streamlit)
 DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': st.secrets["db_scada"]["password"], 'database': 'miaamx_telemetria'}
 DB_INFORME = {'host': 'miaa.mx', 'user': 'miaamx_telemetria2', 'password': st.secrets["db_informe"]["password"], 'database': 'miaamx_telemetria2'}
 DB_POSTGRES = {'user': 'map_tecnica', 'pass': st.secrets["db_postgres"]["pass"], 'host': 'ti.miaa.mx', 'db': 'qgis', 'port': 5432}
 CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw/gviz/tq?tqx=out:csv&sheet=informe'
 
-# Mapeos extraídos de tu código
+# Mapeos basados en tu respaldo
 MAPEO_SCADA = {
     "P-002": {
         "GASTO_(l.p.s.)": "PZ_002_TRC_CAU_INS",
-        "PRESION_(kg/cm2)": "PZ_002_TRC_PRES_INS",
-        "NIVEL_DINAMICO": "PZ_002_TRC_NIV_EST"
+        "PRESION_(kg/cm2)": "PZ_002_TRC_PRES_INS"
     }
 }
 
 MAPEO_POSTGRES = {
     'GASTO_(l.p.s.)': '_Caudal',
     'PRESION_(kg/cm2)': '_Presion',
-    'ESTATUS': '_Estatus',
     'FECHA_ACTUALIZACION': '_Ultima_actualizacion'
 }
 
-# --- 2. FUNCIONES DE LÓGICA (Tu código original) ---
+# --- 2. LÓGICA DE DATOS ---
 
 def limpiar_dato_para_postgres(valor):
+    """Lógica de limpieza de tu respaldo"""
     if pd.isna(valor) or valor == "" or str(valor).lower() == "nan": return None
     if isinstance(valor, str):
         v = valor.replace(',', '').strip()
@@ -43,122 +42,95 @@ def limpiar_dato_para_postgres(valor):
         except: return valor
     return valor
 
-def obtener_valores_scada():
+def ejecutar_sincronizacion_silenciosa():
     try:
-        conn = mysql.connector.connect(**DB_SCADA)
-        cursor = conn.cursor(dictionary=True)
-        tags = [t for p in MAPEO_SCADA.values() for t in p.values()]
-        
-        # Obtener GateIDs
-        fmt = ','.join(['%s'] * len(tags))
-        cursor.execute(f"SELECT NAME, GATEID FROM VfiTagRef WHERE NAME IN ({fmt})", tags)
-        id_map = {r['NAME']: r['GATEID'] for r in cursor.fetchall()}
-        
-        if not id_map: return {}
-        
-        # Obtener Valores
-        gids = list(id_map.values())
-        fmt_ids = ','.join(['%s'] * len(gids))
-        cursor.execute(f"SELECT GATEID, VALUE FROM vfitagnumhistory WHERE GATEID IN ({fmt_ids}) AND FECHA >= NOW() - INTERVAL 15 MINUTE ORDER BY FECHA DESC", gids)
-        
-        val_map = {}
-        for r in cursor.fetchall():
-            if r['GATEID'] not in val_map: val_map[r['GATEID']] = r['VALUE']
-        
-        conn.close()
-        # Retornamos mapeado por NOMBRE de TAG para facilitar tu lógica de inyección
-        return {name: val_map.get(gid) for name, gid in id_map.items()}
-    except Exception as e:
-        st.error(f"Error SCADA: {e}")
-        return {}
+        # A. LEER SHEETS
+        df = pd.read_csv(CSV_URL)
+        df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
+        df['ID'] = df['ID'].astype(str).str.strip()
 
-def ejecutar_actualizacion_web():
-    try:
-        with st.status("🚀 Iniciando Proceso Maestro...", expanded=True) as status:
-            # A. Leer Sheets
-            df = pd.read_csv(CSV_URL)
-            df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
-            df['ID'] = df['ID'].astype(str).str.strip()
-            st.write(f"✅ Google Sheets leído: {len(df)} registros.")
+        # B. FASE SCADA (Inyección Directa)
+        conn_s = mysql.connector.connect(**DB_SCADA)
+        cur_s = conn_s.cursor(dictionary=True)
+        
+        for p_id, config in MAPEO_SCADA.items():
+            for col_excel, tag_name in config.items():
+                # Buscamos el valor más reciente del tag
+                query = """
+                    SELECT h.VALUE FROM vfitagnumhistory h
+                    JOIN VfiTagRef r ON h.GATEID = r.GATEID
+                    WHERE r.NAME = %s AND h.FECHA >= NOW() - INTERVAL 1 HOUR
+                    ORDER BY h.FECHA DESC LIMIT 1
+                """
+                cur_s.execute(query, (tag_name,))
+                res = cur_s.fetchone()
+                if res and res['VALUE'] is not None:
+                    val_f = float(res['VALUE'])
+                    if val_f > 0:
+                        # Sobrescritura forzada en el DataFrame
+                        df.loc[df['ID'] == p_id, col_excel] = val_f
+        cur_s.close(); conn_s.close()
 
-            # B. Fase SCADA (Tu lógica de inyección prioritaria)
-            scada_data = obtener_valores_scada()
-            for p_id, config in MAPEO_SCADA.items():
-                for col, tag in config.items():
-                    val = scada_data.get(tag)
-                    if val is not None:
-                        try:
-                            f_val = float(str(val).replace(',', ''))
-                            if f_val != 0:
-                                # Usamos 'ID' en lugar de 'POZOS' para mayor precisión en el cruce
-                                df.loc[df['ID'] == p_id, col] = round(f_val, 2)
-                                st.write(f"📡 SCADA -> {p_id} ({col}): {round(f_val, 2)}")
-                        except: pass
+        # C. FASE MYSQL (INFORME)
+        pass_my = urllib.parse.quote_plus(DB_INFORME['password'])
+        eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{pass_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
+        with eng_my.begin() as conn:
+            conn.execute(text("TRUNCATE TABLE INFORME"))
+            # Filtro de columnas según tu respaldo
+            cols_db = [r[0] for r in conn.execute(text("SHOW COLUMNS FROM INFORME"))]
+            df_my = df[df.columns.intersection(cols_db)].copy()
+            df_my.to_sql('INFORME', con=conn, if_exists='append', index=False)
 
-            # C. Fase MySQL (Tabla INFORME)
-            st.write("💾 Actualizando MySQL...")
-            p_my = urllib.parse.quote_plus(DB_INFORME['password'])
-            engine_inf = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
-            with engine_inf.begin() as conn:
-                conn.execute(text("TRUNCATE TABLE INFORME"))
-                res = conn.execute(text("SHOW COLUMNS FROM INFORME"))
-                db_cols = [r[0] for r in res]
-                # Esta línea es vital: solo mandamos lo que la DB acepta
-                df_to_save = df[[c for c in df.columns if c in db_cols]].copy()
-                df_to_save.to_sql('INFORME', con=conn, if_exists='append', index=False)
-
-            # D. Fase Postgres (QGIS)
-            st.write("🐘 Sincronizando Postgres...")
-            p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
-            engine_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
-            with engine_pg.begin() as conn:
+        # D. FASE POSTGRES (QGIS)
+        pass_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
+        eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{pass_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
+        with eng_pg.connect() as conn:
+            with conn.begin():
                 for _, row in df.iterrows():
                     id_m = str(row['ID']).strip()
                     if not id_m or id_m == "nan": continue
-                    set_c = []; params = {"id": id_m}
-                    for c_csv, c_pg in MAPEO_POSTGRES.items():
-                        if c_csv in df.columns:
-                            params[c_pg] = limpiar_dato_para_postgres(row[c_csv])
-                            set_c.append(f'"{c_pg}" = :{c_pg}')
-                    if set_c:
-                        conn.execute(text(f'UPDATE public."Pozos" SET {", ".join(set_c)} WHERE "ID" = :id'), params)
-            
-            status.update(label="✅ Sincronización Exitosa", state="complete")
+                    
+                    params = {"id": id_m}
+                    sets = []
+                    for c_excel, c_pg in MAPEO_POSTGRES.items():
+                        if c_excel in df.columns:
+                            # Usamos tu función de limpieza
+                            params[c_pg] = limpiar_dato_para_postgres(row[c_excel])
+                            sets.append(f'"{c_pg}" = :{c_pg}')
+                    
+                    if sets:
+                        sql = f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id'
+                        conn.execute(text(sql), params)
+        
+        return True
     except Exception as e:
-        st.error(f"❌ Error crítico: {e}")
+        st.error(f"Error en proceso: {e}")
+        return False
 
-# --- 3. INTERFAZ WEB ---
-st.title("🖥️ MIAA Data Center - Web Sync")
+# --- 3. INTERFAZ LIMPIA ---
+st.title("MIAA Data System")
 
-with st.container(border=True):
-    col1, col2, col3, col4 = st.columns(4)
-    with col1: modo = st.selectbox("Modo", ["Diario", "Periódico"])
-    with col2: h_in = st.number_input("Hora (0-23)", 0, 23, 8)
-    with col3: m_in = st.number_input("Min/Int", 1, 59, 10)
-    with col4:
-        if "running" not in st.session_state: st.session_state.running = False
-        if st.button("🛑 PARAR" if st.session_state.running else "▶️ INICIAR"):
-            st.session_state.running = not st.session_state.running
-            st.rerun()
+if "running" not in st.session_state: st.session_state.running = False
+
+c1, c2 = st.columns(2)
+with c1:
+    if st.button("▶️ INICIAR MONITOR" if not st.session_state.running else "🛑 PARAR"):
+        st.session_state.running = not st.session_state.running
+        st.rerun()
+
+with c2:
+    if st.button("🚀 FORZAR CARGA MANUAL"):
+        if ejecutar_sincronizacion_silenciosa():
+            st.success("Sincronización completada.")
 
 if st.session_state.running:
     ahora = datetime.datetime.now(zona_local)
-    # Lógica de cálculo de tiempo igual a tu respaldo
-    if modo == "Diario":
-        prox = ahora.replace(hour=int(h_in), minute=int(m_in), second=0, microsecond=0)
-        if prox <= ahora: prox += datetime.timedelta(days=1)
-    else:
-        prox_m = ((ahora.minute // int(m_in)) + 1) * int(m_in)
-        if prox_m >= 60: prox = ahora.replace(minute=0, second=0, microsecond=0) + datetime.timedelta(hours=1)
-        else: prox = ahora.replace(minute=prox_m, second=0, microsecond=0)
+    st.write(f"Estado: Ejecutando... (Última revisión: {ahora.strftime('%H:%M:%S')})")
     
-    diff = prox - ahora
-    st.metric("⏳ PRÓXIMA CARGA EN:", str(diff).split('.')[0])
-    if diff.total_seconds() <= 1:
-        ejecutar_actualizacion_web()
-        st.rerun()
+    # Ejecución cada 10 minutos (como en tu respaldo)
+    if ahora.minute % 10 == 0 and ahora.second == 0:
+        ejecutar_sincronizacion_silenciosa()
+        time.sleep(1)
+    
     time.sleep(1)
     st.rerun()
-else:
-    if st.button("🚀 Sincronización Manual Ahora"):
-        ejecutar_actualizacion_web()
