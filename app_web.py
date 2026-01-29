@@ -6,6 +6,7 @@ import datetime
 import time
 import mysql.connector
 import pytz
+import numpy as np
 
 # --- 1. CONFIGURACIÓN ---
 zona_local = pytz.timezone('America/Mexico_City')
@@ -53,7 +54,7 @@ def ejecutar_sincronizacion_total():
         df = pd.read_csv(CSV_URL)
         df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
         
-        # Limpieza inicial: Convertir fechas a objetos datetime reales
+        # Convertir columna de fecha a datetime de forma segura
         if 'FECHA_ACTUALIZACION' in df.columns:
             df['FECHA_ACTUALIZACION'] = pd.to_datetime(df['FECHA_ACTUALIZACION'], errors='coerce')
         
@@ -74,6 +75,7 @@ def ejecutar_sincronizacion_total():
             for col_excel, tag_name in config.items():
                 val = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
                 if not val.empty:
+                    # Inyectamos el valor numérico
                     df.loc[df['POZOS'] == p_id, col_excel] = round(float(val.values[0]), 2)
         
         conn_s.close()
@@ -86,44 +88,50 @@ def ejecutar_sincronizacion_total():
         eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
         with eng_my.begin() as conn:
             conn.execute(text("TRUNCATE TABLE INFORME"))
-            # Para MySQL, convertimos el DF a algo seguro para SQL
-            df.to_sql('INFORME', con=conn, if_exists='append', index=False)
+            # Reemplazamos NaT/NaN por None para que MySQL no se queje
+            df_sql = df.replace({np.nan: None, pd.NaT: None})
+            df_sql.to_sql('INFORME', con=conn, if_exists='append', index=False)
         logs.append("✅ MySQL: Tabla INFORME actualizada.")
         progreso_bar.progress(75)
 
-        # 4. Postgres QGIS (Corrección de DatatypeMismatch)
+        # 4. Postgres QGIS
         status_text.text("Sincronizando con QGIS...")
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
         
-        # Pre-procesamiento: Convertir NaN a None para que Postgres reciba NULL
-        df_clean = df.where(pd.notnull(df), None)
-        
         with eng_pg.begin() as conn:
-            for _, row in df_clean.iterrows():
-                id_val = str(row['ID']).strip()
-                if id_val and id_val != "None" and id_val != "nan":
-                    # Construcción de parámetros segura
+            for _, row in df.iterrows():
+                id_val = str(row['ID']).strip() if pd.notnull(row['ID']) else None
+                
+                if id_val and id_val != "nan":
                     params = {'id': id_val}
                     sets = []
                     
                     for csv_col, pg_col in MAPEO_POSTGRES.items():
-                        if csv_col in df_clean.columns:
-                            val = row[csv_col]
-                            # Verificación especial para la columna de fecha
-                            if pg_col == '_Ultima_actualizacion' and val is not None:
-                                # Asegurar que sea un string de fecha o un objeto datetime
-                                if isinstance(val, pd.Timestamp):
-                                    val = val.to_pydatetime()
+                        if csv_col in df.columns:
+                            raw_val = row[csv_col]
                             
-                            params[pg_col] = val
+                            # LIMPIEZA CRÍTICA PARA POSTGRES
+                            # Si es NaN, NaT o None, asignar None explícito (SQL NULL)
+                            if pd.isna(raw_val):
+                                clean_val = None
+                            else:
+                                # Si es la fecha, asegurar objeto datetime puro
+                                if pg_col == '_Ultima_actualizacion':
+                                    clean_val = raw_val.to_pydatetime() if hasattr(raw_val, 'to_pydatetime') else raw_val
+                                else:
+                                    # Asegurar que los números no sean tipos raros de numpy
+                                    clean_val = float(raw_val) if isinstance(raw_val, (int, float, np.number)) else raw_val
+                            
+                            params[pg_col] = clean_val
                             sets.append(f'"{pg_col}" = :{pg_col}')
                     
                     if sets:
+                        # Ejecutamos el update fila por fila con parámetros limpios
                         query_upd = text(f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id')
                         conn.execute(query_upd, params)
         
-        logs.append(f"🚀 TODO OK: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
+        logs.append(f"🚀 SINCRO EXITOSA: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
         progreso_bar.progress(100)
         status_text.empty()
         return logs
@@ -131,7 +139,7 @@ def ejecutar_sincronizacion_total():
     except Exception as e:
         return [f"❌ Error crítico: {str(e)}"]
 
-# --- 3. INTERFAZ ---
+# --- 3. INTERFAZ (Sin cambios) ---
 st.title("🖥️ MIAA Control Center")
 
 with st.container(border=True):
