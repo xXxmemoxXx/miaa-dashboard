@@ -161,3 +161,4 @@ if st.session_state.running:
     
     time.sleep(1)
     st.rerun()
+
