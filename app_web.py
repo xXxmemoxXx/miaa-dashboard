@@ -16,9 +16,9 @@ st.set_page_config(page_title="MIAA Control Maestro", layout="wide")
 DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': 'h97_p,NQPo=l', 'database': 'miaamx_telemetria'}
 DB_INFORME = {'host': 'miaa.mx', 'user': 'miaamx_telemetria2', 'password': 'bWkrw1Uum1O&', 'database': 'miaamx_telemetria2'}
 DB_POSTGRES = {'user': 'map_tecnica', 'pass': 'M144.Tec', 'host': 'ti.miaa.mx', 'db': 'qgis', 'port': 5432}
-CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw/gviz/tq?tqx=out:csv&sheet=informe'
+CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw/gviz/tq?tqx:out:csv&sheet=informe'
 
-# MAPEO DE POSTGRES ACTUALIZADO
+# Mapeo Completo Integrado
 MAPEO_POSTGRES = {
     'GASTO_(l.p.s.)':                  '_Caudal',
     'PRESION_(kg/cm2)':                '_Presion',
@@ -37,22 +37,39 @@ MAPEO_POSTGRES = {
 }
 
 MAPEO_SCADA = {
-    "P-002": {
-        "GASTO_(l.p.s.)":"PZ_002_TRC_CAU_INS", "PRESION_(kg/cm2)":"PZ_002_TRC_PRES_INS",
-        "VOLTAJE_L1":"PZ_002_TRC_VOL_L1_L2", "AMP_L1":"PZ_002_TRC_CORR_L1",
-        "LONGITUD_DE_COLUMNA":"PZ_002_TRC_LONG_COLUM", "NIVEL_DINAMICO_(mts)":"PZ_002_TRC_NIV_EST",
-    },
-    "P-003": {
-        "GASTO_(l.p.s.)":"PZ_003_CAU_INS", "PRESION_(kg/cm2)":"PZ_003_PRES_INS",
-        "VOLTAJE_L1":"PZ_003_VOL_L1_L2", "AMP_L1":"PZ_003_CORR_L1",
-        "LONGITUD_DE_COLUMNA":"PZ_003_LONG_COLUM", "NIVEL_DINAMICO_(mts)":"PZ_003_NIV_EST",
-    }
+"P-002": {
+"GASTO_(l.p.s.)":"PZ_002_TRC_CAU_INS",
+"PRESION_(kg/cm2)":"PZ_002_TRC_PRES_INS",
+"VOLTAJE_L1":"PZ_002_TRC_VOL_L1_L2",
+"VOLTAJE_L2":"PZ_002_TRC_VOL_L2_L3",
+"VOLTAJE_L3":"PZ_002_TRC_VOL_L1_L3",
+"AMP_L1":"PZ_002_TRC_CORR_L1",
+"AMP_L2":"PZ_002_TRC_CORR_L2",
+"AMP_L3":"PZ_002_TRC_CORR_L3",
+"LONGITUD_DE_COLUMNA":"PZ_002_TRC_LONG_COLUM",
+"SUMERGENCIA":"PZ_002_TRC_SUMERG",
+"NIVEL_DINAMICO":"PZ_002_TRC_NIV_EST",
+},
+
+"P-003": {
+"GASTO_(l.p.s.)":"PZ_003_CAU_INS",
+"PRESION_(kg/cm2)":"PZ_003_PRES_INS",
+"VOLTAJE_L1":"PZ_003_VOL_L1_L2",
+"VOLTAJE_L2":"PZ_003_VOL_L2_L3",
+"VOLTAJE_L3":"PZ_003_VOL_L1_L3",
+"AMP_L1":"PZ_003_CORR_L1",
+"AMP_L2":"PZ_003_CORR_L2",
+"AMP_L3":"PZ_003_CORR_L3",
+"LONGITUD_DE_COLUMNA":"PZ_003_LONG_COLUM",
+"SUMERGENCIA":"PZ_003_SUMERG",
+"NIVEL_DINAMICO":"PZ_003_NIV_EST",
+},
 }
 
 # --- 2. LÓGICA DE PROCESAMIENTO ---
 
 def ejecutar_sincronizacion_total():
-    st.session_state.last_logs = [] 
+    st.session_state.last_logs = [] # Limpiar consola al iniciar
     logs = []
     progreso_bar = st.progress(0)
     status_text = st.empty()
@@ -86,7 +103,7 @@ def ejecutar_sincronizacion_total():
         logs.append("🧬 SCADA: Valores inyectados correctamente.")
         progreso_bar.progress(50)
 
-        # 3. MySQL
+        # 3. MySQL Informe
         status_text.text("Actualizando MySQL...")
         p_my = urllib.parse.quote_plus(DB_INFORME['password'])
         eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
@@ -97,10 +114,11 @@ def ejecutar_sincronizacion_total():
         logs.append("✅ MySQL: Tabla INFORME actualizada.")
         progreso_bar.progress(75)
 
-        # 4. Postgres (QGIS) con nuevo mapeo
+        # 4. Postgres QGIS
         status_text.text("Sincronizando con QGIS...")
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
+        
         with eng_pg.begin() as conn:
             for _, row in df.iterrows():
                 id_val = str(row['ID']).strip() if pd.notnull(row['ID']) else None
@@ -109,16 +127,20 @@ def ejecutar_sincronizacion_total():
                     sets = []
                     for csv_col, pg_col in MAPEO_POSTGRES.items():
                         if csv_col in df.columns:
-                            raw_val = row[csv_col]
-                            if pd.isna(raw_val): clean_val = None
+                            val = row[csv_col]
+                            # LIMPIEZA DE DATOS (Solución al error de tu imagen)
+                            if pd.isna(val) or val == 'NaN':
+                                clean_val = None
+                            elif pg_col == '_Ultima_actualizacion':
+                                clean_val = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else val
+                            elif isinstance(val, str):
+                                # Quitar comas de números en texto (ej. "50,399.00" -> 50399.00)
+                                clean_val = val.replace(',', '')
+                                try: clean_val = float(clean_val)
+                                except: pass # Mantener como string si es ESTATUS o SECTOR
                             else:
-                                if pg_col == '_Ultima_actualizacion':
-                                    clean_val = raw_val.to_pydatetime() if hasattr(raw_val, 'to_pydatetime') else raw_val
-                                elif isinstance(raw_val, (int, float, np.number)):
-                                    clean_val = float(raw_val)
-                                else:
-                                    clean_val = str(raw_val) # Para ESTATUS, SECTOR, etc.
-                            
+                                clean_val = val
+                                
                             params[pg_col] = clean_val
                             sets.append(f'"{pg_col}" = :{pg_col}')
                     
@@ -137,7 +159,7 @@ def ejecutar_sincronizacion_total():
 # --- 3. INTERFAZ ---
 
 def reset_console():
-    st.session_state.last_logs = ["SISTEMA EN ESPERA (Nueva hora programada)..."]
+    st.session_state.last_logs = ["SISTEMA EN ESPERA (Configuración actualizada)..."]
 
 st.title("🖥️ MIAA Control Center")
 
@@ -159,7 +181,7 @@ with st.container(border=True):
 log_txt = "<br>".join(st.session_state.get('last_logs', ["SISTEMA EN ESPERA..."]))
 st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:250px;overflow-y:auto;border-radius:5px;line-height:1.6;">{log_txt}</div>', unsafe_allow_html=True)
 
-# --- 4. RELOJ DE EJECUCIÓN ---
+# --- 4. RELOJ UNIFICADO ---
 if st.session_state.running:
     ahora = datetime.datetime.now(zona_local)
     if modo == "Diario":
