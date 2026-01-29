@@ -41,7 +41,15 @@ MAPEO_SCADA = {
 }
 
 # --- 2. LÓGICA DE PROCESAMIENTO ---
-
+def limpiar_dato_postgres(val):
+    """Limpia formatos para evitar el error 'Double Precision' en Postgres."""
+    if pd.isna(val) or val == "" or str(val).lower() == "nan": return None
+    if isinstance(val, str):
+        val = val.strip().replace(',', '')
+        try: return float(val)
+        except: return val
+    return val
+    
 def ejecutar_sincronizacion_total():
     logs = []
     progreso_bar = st.progress(0)
@@ -152,3 +160,4 @@ if st.session_state.running:
         st.rerun()
     time.sleep(1)
     st.rerun()
+
