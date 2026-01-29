@@ -2097,6 +2097,7 @@ MAPEO_SCADA = {
 # --- 2. LÓGICA DE PROCESAMIENTO ---
 
 def ejecutar_sincronizacion_total():
+    # Limpieza inmediata de la consola antes de procesar
     st.session_state.last_logs = [] 
     logs = []
     progreso_bar = st.progress(0)
@@ -2104,47 +2105,40 @@ def ejecutar_sincronizacion_total():
     filas_pg = 0
     
     try:
-        # 1. Google Sheets
+        # 1. Lectura Google Sheets
         status_text.text("Leyendo datos maestros...")
         df = pd.read_csv(CSV_URL)
         df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
+        
+        # Validación de existencia de columna para evitar errores críticos
+        if 'POZOS' not in df.columns:
+            return [f"❌ Error: No se encontró la columna 'POZOS'. Verifique el Excel."]
+
+        if 'FECHA_ACTUALIZACION' in df.columns:
+            df['FECHA_ACTUALIZACION'] = pd.to_datetime(df['FECHA_ACTUALIZACION'], errors='coerce')
+        
         logs.append(f"✅ Google Sheets: {len(df)} registros leídos.")
         progreso_bar.progress(20)
 
-        # 2. SCADA (Optimizado para 1600+ variables)
-        status_text.text("Consultando SCADA (Carga Masiva)...")
+        # 2. SCADA
+        status_text.text("Consultando SCADA...")
         conn_s = mysql.connector.connect(**DB_SCADA)
+        all_tags = []
+        for p_id in MAPEO_SCADA: all_tags.extend(MAPEO_SCADA[p_id].values())
         
-        # Aplanamos todos los tags en una lista única para una sola consulta SQL
-        todos_los_tags = []
-        for pozo in MAPEO_SCADA.values():
-            todos_los_tags.extend(pozo.values())
+        query = f"SELECT r.NAME, h.VALUE FROM vfitagnumhistory h JOIN VfiTagRef r ON h.GATEID = r.GATEID WHERE r.NAME IN ({','.join(['%s']*len(all_tags))}) AND h.FECHA >= NOW() - INTERVAL 1 DAY ORDER BY h.FECHA DESC"
+        df_scada = pd.read_sql(query, conn_s, params=all_tags).drop_duplicates('NAME')
         
-        # Consulta de alto rendimiento: una sola petición para todos los tags
-        query = f"""
-            SELECT r.NAME, h.VALUE 
-            FROM vfitagnumhistory h 
-            JOIN VfiTagRef r ON h.GATEID = r.GATEID 
-            WHERE r.NAME IN ({','.join(['%s']*len(todos_los_tags))}) 
-            AND h.FECHA >= NOW() - INTERVAL 1 DAY 
-            ORDER BY h.FECHA DESC
-        """
-        # Se descarga todo a memoria de una vez
-        df_scada_raw = pd.read_sql(query, conn_s, params=todos_los_tags).drop_duplicates('NAME')
+        for p_id, config in MAPEO_SCADA.items():
+            for col_excel, tag_name in config.items():
+                val = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
+                if not val.empty and col_excel in df.columns:
+                    df.loc[df['POZOS'] == p_id, col_excel] = round(float(val.values[0]), 2)
         conn_s.close()
-
-        # Inyectar valores al DataFrame principal usando mapeo en memoria (rápido)
-        scada_dict = dict(zip(df_scada_raw['NAME'], df_scada_raw['VALUE']))
-        
-        for pozo_id, variables in MAPEO_SCADA.items():
-            for col_excel, tag_scada in variables.items():
-                if tag_scada in scada_dict:
-                    df.loc[df['POZOS'] == pozo_id, col_excel] = round(float(scada_dict[tag_scada]), 2)
-        
-        logs.append(f"🧬 SCADA: {len(todos_los_tags)} variables procesadas.")
+        logs.append("🧬 SCADA: Valores inyectados correctamente.")
         progreso_bar.progress(50)
 
-        # 3. MySQL
+        # 3. MySQL (Tabla INFORME)
         status_text.text("Actualizando MySQL...")
         p_my = urllib.parse.quote_plus(DB_INFORME['password'])
         eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
@@ -2155,7 +2149,7 @@ def ejecutar_sincronizacion_total():
         logs.append("✅ MySQL: Tabla INFORME actualizada.")
         progreso_bar.progress(75)
 
-        # 4. Postgres (QGIS) con Limpieza de comas
+        # 4. Postgres (QGIS) con Limpieza de Formato
         status_text.text("Sincronizando con QGIS...")
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
@@ -2169,17 +2163,19 @@ def ejecutar_sincronizacion_total():
                     for csv_col, pg_col in MAPEO_POSTGRES.items():
                         if csv_col in df.columns:
                             val = row[csv_col]
+                            # Limpieza para evitar errores de tipo de dato (InvalidTextRepresentation)
                             if pd.isna(val) or str(val).lower() == 'nan':
                                 clean_val = None
                             elif pg_col == '_Ultima_actualizacion':
                                 clean_val = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else val
                             elif isinstance(val, str):
-                                # Limpieza de comas para tipos Double Precision
-                                clean_val = val.replace(',', '')
-                                try: clean_val = float(clean_val)
-                                except: pass 
+                                # Eliminar comas de miles para que Postgres lo acepte como número
+                                s_val = val.replace(',', '')
+                                try: clean_val = float(s_val)
+                                except: clean_val = val # Dejar como texto si no es numérico
                             else:
                                 clean_val = val
+                                
                             params[pg_col] = clean_val
                             sets.append(f'"{pg_col}" = :{pg_col}')
                     
@@ -2187,7 +2183,7 @@ def ejecutar_sincronizacion_total():
                         res = conn.execute(text(f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id'), params)
                         filas_pg += res.rowcount
         
-        logs.append(f"🐘 Postgres: {filas_pg} filas sincronizadas.")
+        logs.append(f"🐘 Postgres: Tabla POZOS actualizada ({filas_pg} filas).")
         logs.append(f"🚀 SINCRO EXITOSA: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
         progreso_bar.progress(100)
         status_text.empty()
@@ -2195,9 +2191,10 @@ def ejecutar_sincronizacion_total():
     except Exception as e:
         return [f"❌ Error crítico: {str(e)}"]
 
-# --- 3. INTERFAZ (Consola Limpia) ---
+# --- 3. INTERFAZ ---
+
 def reset_console():
-    st.session_state.last_logs = ["SISTEMA EN ESPERA..."]
+    st.session_state.last_logs = ["SISTEMA EN ESPERA (Configuración actualizada)..."]
 
 st.title("🖥️ MIAA Control Center")
 
@@ -2216,16 +2213,18 @@ with st.container(border=True):
         if st.button("🚀 FORZAR CARGA", use_container_width=True):
             st.session_state.last_logs = ejecutar_sincronizacion_total()
 
+# Mostrar la consola
 log_txt = "<br>".join(st.session_state.get('last_logs', ["SISTEMA EN ESPERA..."]))
 st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:250px;overflow-y:auto;border-radius:5px;line-height:1.6;">{log_txt}</div>', unsafe_allow_html=True)
 
-# --- 4. RELOJ ---
+# --- 4. RELOJ DE EJECUCIÓN ---
 if st.session_state.running:
     ahora = datetime.datetime.now(zona_local)
     if modo == "Diario":
         prox = ahora.replace(hour=h_in, minute=m_in, second=0, microsecond=0)
         if ahora >= prox: prox += datetime.timedelta(days=1)
     else:
+        # Modo Periódico
         total_m = ahora.hour * 60 + ahora.minute
         sig = ((total_m // m_in) + 1) * m_in
         prox = ahora.replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=sig)
@@ -2239,4 +2238,5 @@ if st.session_state.running:
     
     time.sleep(1)
     st.rerun()
+
 
