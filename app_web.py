@@ -16,7 +16,7 @@ st.set_page_config(page_title="MIAA Control Maestro", layout="wide")
 DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': 'h97_p,NQPo=l', 'database': 'miaamx_telemetria'}
 DB_INFORME = {'host': 'miaa.mx', 'user': 'miaamx_telemetria2', 'password': 'bWkrw1Uum1O&', 'database': 'miaamx_telemetria2'}
 DB_POSTGRES = {'user': 'map_tecnica', 'pass': 'M144.Tec', 'host': 'ti.miaa.mx', 'db': 'qgis', 'port': 5432}
-CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw/gviz/tq?tqx:out:csv&sheet=informe'
+CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw/gviz/tq?tqx=out:csv&sheet=informe'
 
 # Mapeo Completo Integrado
 MAPEO_POSTGRES = {
@@ -52,7 +52,7 @@ MAPEO_SCADA = {
 # --- 2. LÓGICA DE PROCESAMIENTO ---
 
 def ejecutar_sincronizacion_total():
-    st.session_state.last_logs = [] # Limpiar consola al iniciar
+    st.session_state.last_logs = [] 
     logs = []
     progreso_bar = st.progress(0)
     status_text = st.empty()
@@ -63,8 +63,15 @@ def ejecutar_sincronizacion_total():
         status_text.text("Leyendo datos maestros...")
         df = pd.read_csv(CSV_URL)
         df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
+        
+        # VALIDACIÓN CRÍTICA DE COLUMNA "POZOS"
+        col_id_pozo = "POZOS" if "POZOS" in df.columns else None
+        if not col_id_pozo:
+            return [f"❌ Error: No se encontró la columna 'POZOS'. Columnas detectadas: {list(df.columns[:5])}..."]
+
         if 'FECHA_ACTUALIZACION' in df.columns:
             df['FECHA_ACTUALIZACION'] = pd.to_datetime(df['FECHA_ACTUALIZACION'], errors='coerce')
+        
         logs.append(f"✅ Google Sheets: {len(df)} registros leídos.")
         progreso_bar.progress(20)
 
@@ -80,8 +87,8 @@ def ejecutar_sincronizacion_total():
         for p_id, config in MAPEO_SCADA.items():
             for col_excel, tag_name in config.items():
                 val = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
-                if not val.empty:
-                    df.loc[df['POZOS'] == p_id, col_excel] = round(float(val.values[0]), 2)
+                if not val.empty and col_excel in df.columns:
+                    df.loc[df[col_id_pozo] == p_id, col_excel] = round(float(val.values[0]), 2)
         conn_s.close()
         logs.append("🧬 SCADA: Valores inyectados correctamente.")
         progreso_bar.progress(50)
@@ -111,16 +118,14 @@ def ejecutar_sincronizacion_total():
                     for csv_col, pg_col in MAPEO_POSTGRES.items():
                         if csv_col in df.columns:
                             val = row[csv_col]
-                            # LIMPIEZA DE DATOS (Solución al error de tu imagen)
                             if pd.isna(val) or val == 'NaN':
                                 clean_val = None
                             elif pg_col == '_Ultima_actualizacion':
                                 clean_val = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else val
                             elif isinstance(val, str):
-                                # Quitar comas de números en texto (ej. "50,399.00" -> 50399.00)
                                 clean_val = val.replace(',', '')
                                 try: clean_val = float(clean_val)
-                                except: pass # Mantener como string si es ESTATUS o SECTOR
+                                except: pass 
                             else:
                                 clean_val = val
                                 
@@ -140,7 +145,6 @@ def ejecutar_sincronizacion_total():
         return [f"❌ Error crítico: {str(e)}"]
 
 # --- 3. INTERFAZ ---
-
 def reset_console():
     st.session_state.last_logs = ["SISTEMA EN ESPERA (Configuración actualizada)..."]
 
