@@ -2097,20 +2097,22 @@ MAPEO_SCADA = {
 # --- 2. LÓGICA DE PROCESAMIENTO ---
 
 def ejecutar_sincronizacion_total():
+    # Inicio del cronómetro
+    start_time = time.time()
+    
     # Limpieza inmediata de la consola antes de procesar
     st.session_state.last_logs = [] 
     logs = []
-    progreso_bar = st.progress(0)
+    progreso_bar = st.progress(0, text="Iniciando proceso...") # Barra con texto de porcentaje
     status_text = st.empty()
     filas_pg = 0
     
     try:
         # 1. Lectura Google Sheets
-        status_text.text("Leyendo datos maestros...")
+        progreso_bar.progress(5, text="20% - Leyendo datos maestros...")
         df = pd.read_csv(CSV_URL)
         df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
         
-        # Validación de existencia de columna para evitar errores críticos
         if 'POZOS' not in df.columns:
             return [f"❌ Error: No se encontró la columna 'POZOS'. Verifique el Excel."]
 
@@ -2118,10 +2120,10 @@ def ejecutar_sincronizacion_total():
             df['FECHA_ACTUALIZACION'] = pd.to_datetime(df['FECHA_ACTUALIZACION'], errors='coerce')
         
         logs.append(f"✅ Google Sheets: {len(df)} registros leídos.")
-        progreso_bar.progress(20)
+        progreso_bar.progress(20, text="20% - Google Sheets completado.")
 
         # 2. SCADA
-        status_text.text("Consultando SCADA...")
+        progreso_bar.progress(35, text="40% - Consultando SCADA...")
         conn_s = mysql.connector.connect(**DB_SCADA)
         all_tags = []
         for p_id in MAPEO_SCADA: all_tags.extend(MAPEO_SCADA[p_id].values())
@@ -2136,10 +2138,10 @@ def ejecutar_sincronizacion_total():
                     df.loc[df['POZOS'] == p_id, col_excel] = round(float(val.values[0]), 2)
         conn_s.close()
         logs.append("🧬 SCADA: Valores inyectados correctamente.")
-        progreso_bar.progress(50)
+        progreso_bar.progress(50, text="50% - SCADA sincronizado.")
 
         # 3. MySQL (Tabla INFORME)
-        status_text.text("Actualizando MySQL...")
+        progreso_bar.progress(60, text="70% - Actualizando MySQL...")
         p_my = urllib.parse.quote_plus(DB_INFORME['password'])
         eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
         with eng_my.begin() as conn:
@@ -2147,10 +2149,10 @@ def ejecutar_sincronizacion_total():
             df_sql = df.replace({np.nan: None, pd.NaT: None})
             df_sql.to_sql('INFORME', con=conn, if_exists='append', index=False)
         logs.append("✅ MySQL: Tabla INFORME actualizada.")
-        progreso_bar.progress(75)
+        progreso_bar.progress(75, text="75% - MySQL completado.")
 
-        # 4. Postgres (QGIS) con Limpieza de Formato
-        status_text.text("Sincronizando con QGIS...")
+        # 4. Postgres (QGIS)
+        progreso_bar.progress(85, text="90% - Sincronizando con QGIS...")
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
         
@@ -2163,19 +2165,16 @@ def ejecutar_sincronizacion_total():
                     for csv_col, pg_col in MAPEO_POSTGRES.items():
                         if csv_col in df.columns:
                             val = row[csv_col]
-                            # Limpieza para evitar errores de tipo de dato (InvalidTextRepresentation)
                             if pd.isna(val) or str(val).lower() == 'nan':
                                 clean_val = None
                             elif pg_col == '_Ultima_actualizacion':
                                 clean_val = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else val
                             elif isinstance(val, str):
-                                # Eliminar comas de miles para que Postgres lo acepte como número
                                 s_val = val.replace(',', '')
                                 try: clean_val = float(s_val)
-                                except: clean_val = val # Dejar como texto si no es numérico
+                                except: clean_val = val
                             else:
                                 clean_val = val
-                                
                             params[pg_col] = clean_val
                             sets.append(f'"{pg_col}" = :{pg_col}')
                     
@@ -2183,11 +2182,19 @@ def ejecutar_sincronizacion_total():
                         res = conn.execute(text(f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id'), params)
                         filas_pg += res.rowcount
         
+        # --- CÁLCULO DE TIEMPO FINAL ---
+        end_time = time.time()
+        duracion = round(end_time - start_time, 2)
+        
         logs.append(f"🐘 Postgres: Tabla POZOS actualizada ({filas_pg} filas).")
+        logs.append(f"⏱️ **DURACIÓN DEL PROCESO: {duracion} segundos**")
         logs.append(f"🚀 SINCRO EXITOSA: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
-        progreso_bar.progress(100)
+        
+        progreso_bar.progress(100, text="100% - Sincronización finalizada.")
+        time.sleep(1) # Pausa breve para que el usuario vea el 100%
         status_text.empty()
         return logs
+
     except Exception as e:
         return [f"❌ Error crítico: {str(e)}"]
 
@@ -2238,5 +2245,6 @@ if st.session_state.running:
     
     time.sleep(1)
     st.rerun()
+
 
 
