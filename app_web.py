@@ -11,7 +11,7 @@ import pytz
 zona_local = pytz.timezone('America/Mexico_City')
 st.set_page_config(page_title="MIAA Control Maestro", layout="wide")
 
-# Credenciales
+# Credenciales de QGIS RESPALDO.py
 DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': 'h97_p,NQPo=l', 'database': 'miaamx_telemetria'}
 DB_INFORME = {'host': 'miaa.mx', 'user': 'miaamx_telemetria2', 'password': 'bWkrw1Uum1O&', 'database': 'miaamx_telemetria2'}
 DB_POSTGRES = {'user': 'map_tecnica', 'pass': 'M144.Tec', 'host': 'ti.miaa.mx', 'db': 'qgis', 'port': 5432}
@@ -48,39 +48,39 @@ def ejecutar_sincronizacion_total():
     status_text = st.empty()
     
     try:
-        # Paso 1: Google Sheets (20%)
+        # Paso 1: Google Sheets (15%)
         status_text.text("⌛ Leyendo Google Sheets...")
         df = pd.read_csv(CSV_URL)
         df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
-        progreso_bar.progress(20)
+        progreso_bar.progress(15)
         logs.append(f"✅ Google Sheets: {len(df)} registros leídos.")
 
-        # Paso 2: Inyección SCADA Real (50%)
-        status_text.text("🧬 Consultando y mapeando SCADA...")
+        # Paso 2: SCADA Real (40%)
+        status_text.text("🧬 Consultando SCADA (Telemetría)...")
         conn_s = mysql.connector.connect(**DB_SCADA)
         cur_s = conn_s.cursor(dictionary=True)
         for p_id, config in MAPEO_SCADA.items():
             for col_excel, tag_name in config.items():
                 cur_s.execute("SELECT VALUE FROM vfitagnumhistory h JOIN VfiTagRef r ON h.GATEID = r.GATEID WHERE r.NAME = %s ORDER BY h.FECHA DESC LIMIT 1", (tag_name,))
                 res = cur_s.fetchone()
-                if res and res['VALUE'] is not None and float(res['VALUE']) > 0:
+                if res and res['VALUE'] is not None:
                     df.loc[df['POZOS'] == p_id, col_excel] = round(float(res['VALUE']), 2)
         cur_s.close(); conn_s.close()
-        progreso_bar.progress(50)
+        progreso_bar.progress(40)
         logs.append("🧬 SCADA: Valores inyectados correctamente.")
 
-        # Paso 3: MySQL Informe (75%)
-        status_text.text("💾 Actualizando MySQL...")
+        # Paso 3: MySQL Informe (65%)
+        status_text.text("💾 Actualizando MySQL (miaamx_telemetria2)...")
         p_my = urllib.parse.quote_plus(DB_INFORME['password'])
         eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
         with eng_my.begin() as conn:
             conn.execute(text("TRUNCATE TABLE INFORME"))
             df.to_sql('INFORME', con=conn, if_exists='append', index=False)
-        progreso_bar.progress(75)
+        progreso_bar.progress(65)
         logs.append("✅ MySQL: Tabla INFORME actualizada.")
 
         # Paso 4: Postgres QGIS Completo (100%)
-        status_text.text("🐢 Sincronizando todo el mapeo en PostgreSQL...")
+        status_text.text("🐢 Sincronizando todo el mapeo en PostgreSQL (QGIS)...")
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
         
@@ -88,12 +88,12 @@ def ejecutar_sincronizacion_total():
             for _, row in df.iterrows():
                 id_val = str(row['ID']).strip()
                 if id_val and id_val != "nan":
-                    # Mapeo dinámico de todas las columnas de Postgres
                     params = {"id": id_val}
                     update_fields = []
                     for col_csv, col_pg in MAPEO_POSTGRES.items():
                         if col_csv in df.columns:
-                            params[col_pg] = row[col_csv]
+                            val = row[col_csv]
+                            params[col_pg] = None if pd.isna(val) else val
                             update_fields.append(f'"{col_pg}" = :{col_pg}')
                     
                     if update_fields:
@@ -101,7 +101,7 @@ def ejecutar_sincronizacion_total():
                         conn.execute(text(query), params)
         
         progreso_bar.progress(100)
-        status_text.markdown("🚀 **¡Proceso completado exitosamente!**")
+        status_text.markdown("🚀 **¡Carga completada con éxito!**")
         logs.append("✅ Postgres: Mapeo completo actualizado en QGIS.")
         logs.append(f"🚀 TODO OK: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
         return logs
@@ -131,9 +131,9 @@ with st.container(border=True):
 log_txt = "<br>".join(st.session_state.get('last_logs', ["SISTEMA LISTO..."]))
 st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:250px;overflow-y:auto;border-radius:5px;line-height:1.6;">{log_txt}</div>', unsafe_allow_html=True)
 
-# Cronómetro (solo si está activo)
 if st.session_state.running:
     ahora = datetime.datetime.now(zona_local)
+    # Lógica de cálculo simplificada para evitar saturación de memoria
     prox_m = ((ahora.minute // m_in) + 1) * m_in
     prox = ahora.replace(minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=prox_m)
     diff = prox - ahora
