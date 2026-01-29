@@ -101,7 +101,7 @@ def ejecutar_sincronizacion_total():
         return [f"❌ Error crítico: {str(e)}"]
 
 # --- 3. INTERFAZ ---
-st.title("🖥️ MIAA Control Center")
+st.title("🖥️ MIAA")
 
 with st.container(border=True):
     c1, c2, c3, c4, c5 = st.columns([1.5, 1, 1, 1.5, 1.5])
@@ -134,3 +134,4 @@ if st.session_state.running:
         st.rerun()
     time.sleep(1)
     st.rerun()
+
