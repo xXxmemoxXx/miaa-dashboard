@@ -27,7 +27,7 @@ MAPEO_POSTGRES = {
     'NIVEL_ESTATICO_(mts)': '_Nivel_Est',
     'FECHA_ACTUALIZACION': '_Ultima_actualizacion'
 }
-}
+
 MAPEO_SCADA = {
 "P-002": {
 "GASTO_(l.p.s.)":"PZ_002_TRC_CAU_INS",
@@ -183,6 +183,7 @@ if st.session_state.running:
     
     time.sleep(1)
     st.rerun()
+
 
 
 
