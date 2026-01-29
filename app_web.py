@@ -11,13 +11,13 @@ import pytz
 zona_local = pytz.timezone('America/Mexico_City')
 st.set_page_config(page_title="MIAA Control Maestro", layout="wide")
 
-# Credenciales (Basadas en tu archivo de respaldo)
+# Credenciales
 DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': 'h97_p,NQPo=l', 'database': 'miaamx_telemetria'}
 DB_INFORME = {'host': 'miaa.mx', 'user': 'miaamx_telemetria2', 'password': 'bWkrw1Uum1O&', 'database': 'miaamx_telemetria2'}
 DB_POSTGRES = {'user': 'map_tecnica', 'pass': 'M144.Tec', 'host': 'ti.miaa.mx', 'db': 'qgis', 'port': 5432}
 CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw/gviz/tq?tqx=out:csv&sheet=informe'
 
-# Mapeos completos para inyección total
+# Mapeos
 MAPEO_POSTGRES = {
     'GASTO_(l.p.s.)': '_Caudal',
     'PRESION_(kg/cm2)': '_Presion',
@@ -31,12 +31,12 @@ MAPEO_SCADA = {
     "P-002": {
         "GASTO_(l.p.s.)":"PZ_002_TRC_CAU_INS", "PRESION_(kg/cm2)":"PZ_002_TRC_PRES_INS",
         "VOLTAJE_L1":"PZ_002_TRC_VOL_L1_L2", "AMP_L1":"PZ_002_TRC_CORR_L1",
-        "LONGITUD_DE_COLUMNA":"PZ_002_TRC_LONG_COLUM", "NIVEL_DINAMICO":"PZ_002_TRC_NIV_EST",
+        "LONGITUD_DE_COLUMNA":"PZ_002_TRC_LONG_COLUM", "NIVEL_DINAMICO_(mts)":"PZ_002_TRC_NIV_EST",
     },
     "P-003": {
         "GASTO_(l.p.s.)":"PZ_003_CAU_INS", "PRESION_(kg/cm2)":"PZ_003_PRES_INS",
         "VOLTAJE_L1":"PZ_003_VOL_L1_L2", "AMP_L1":"PZ_003_CORR_L1",
-        "LONGITUD_DE_COLUMNA":"PZ_003_LONG_COLUM", "NIVEL_DINAMICO":"PZ_003_NIV_EST",
+        "LONGITUD_DE_COLUMNA":"PZ_003_LONG_COLUM", "NIVEL_DINAMICO_(mts)":"PZ_003_NIV_EST",
     }
 }
 
@@ -55,17 +55,25 @@ def ejecutar_sincronizacion_total():
         logs.append(f"✅ Google Sheets: {len(df)} registros leídos.")
         progreso_bar.progress(20)
 
-        # 2. SCADA (Inyección masiva y rápida)
+        # 2. SCADA (Obtención de valores en tiempo real)
         status_text.text("Consultando SCADA...")
         conn_s = mysql.connector.connect(**DB_SCADA)
-        # Extraemos todos los tags necesarios para una sola consulta
         all_tags = []
         for p_id in MAPEO_SCADA:
             all_tags.extend(MAPEO_SCADA[p_id].values())
         
-        query = f"SELECT r.NAME, h.VALUE FROM vfitagnumhistory h JOIN VfiTagRef r ON h.GATEID = r.GATEID WHERE r.NAME IN ({','.join(['%s']*len(all_tags))}) AND h.FECHA >= NOW() - INTERVAL 1 DAY ORDER BY h.FECHA DESC"
+        # Consulta de los últimos valores registrados
+        query = f"""
+            SELECT r.NAME, h.VALUE 
+            FROM vfitagnumhistory h 
+            JOIN VfiTagRef r ON h.GATEID = r.GATEID 
+            WHERE r.NAME IN ({','.join(['%s']*len(all_tags))}) 
+            AND h.FECHA >= NOW() - INTERVAL 1 DAY 
+            ORDER BY h.FECHA DESC
+        """
         df_scada = pd.read_sql(query, conn_s, params=all_tags).drop_duplicates('NAME')
         
+        # Inyección de valores SCADA al DataFrame principal
         for p_id, config in MAPEO_SCADA.items():
             for col_excel, tag_name in config.items():
                 val = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
@@ -73,12 +81,11 @@ def ejecutar_sincronizacion_total():
                     df.loc[df['POZOS'] == p_id, col_excel] = round(float(val.values[0]), 2)
         
         conn_s.close()
-        logs.append("🧬 SCADA: Valores inyectados en DataFrame.")
+        logs.append("🧬 SCADA: Valores inyectados correctamente.")
         progreso_bar.progress(50)
 
-        # 3. MySQL Informe
+        # 3. MySQL Informe (Escribir datos actualizados)
         status_text.text("Actualizando MySQL...")
-        logs.append("💾 Actualizando tabla INFORME en MySQL...")
         p_my = urllib.parse.quote_plus(DB_INFORME['password'])
         eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
         with eng_my.begin() as conn:
@@ -87,9 +94,8 @@ def ejecutar_sincronizacion_total():
         logs.append("✅ MySQL: Tabla INFORME actualizada.")
         progreso_bar.progress(75)
 
-        # 4. Postgres QGIS (Inyectando todo el mapeo_postgres)
+        # 4. Postgres QGIS (Sincronización de campos técnicos)
         status_text.text("Sincronizando con QGIS...")
-        logs.append("🐢 Sincronizando PostgreSQL (QGIS)...")
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
         
@@ -97,11 +103,14 @@ def ejecutar_sincronizacion_total():
             for _, row in df.iterrows():
                 id_val = str(row['ID']).strip()
                 if id_val and id_val != "nan":
-                    # Construye el UPDATE con todos los campos del mapeo_postgres
+                    # Mapeo dinámico para el UPDATE en Postgres
                     sets = [f'"{pg_col}" = :{pg_col}' for csv_col, pg_col in MAPEO_POSTGRES.items() if csv_col in df.columns]
                     params = {pg_col: row[csv_col] for csv_col, pg_col in MAPEO_POSTGRES.items() if csv_col in df.columns}
                     params['id'] = id_val
-                    conn.execute(text(f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id'), params)
+                    
+                    if sets:
+                        sql_upd = f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id'
+                        conn.execute(text(sql_upd), params)
         
         logs.append(f"🚀 TODO OK: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
         progreso_bar.progress(100)
@@ -111,7 +120,7 @@ def ejecutar_sincronizacion_total():
     except Exception as e:
         return [f"❌ Error crítico: {str(e)}"]
 
-# --- 3. INTERFAZ ---
+# --- 3. INTERFAZ (Sin modificaciones) ---
 st.title("🖥️ MIAA Control Center")
 
 with st.container(border=True):
@@ -128,7 +137,6 @@ with st.container(border=True):
         if st.button("🚀 FORZAR CARGA", use_container_width=True):
             st.session_state.last_logs = ejecutar_sincronizacion_total()
 
-# Consola con iconos y colores correctos
 log_txt = "<br>".join(st.session_state.get('last_logs', ["SISTEMA EN ESPERA..."]))
 st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:250px;overflow-y:auto;border-radius:5px;line-height:1.6;">{log_txt}</div>', unsafe_allow_html=True)
 
@@ -144,5 +152,3 @@ if st.session_state.running:
         st.rerun()
     time.sleep(1)
     st.rerun()
-
-
