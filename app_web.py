@@ -158,13 +158,27 @@ st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font
 
 if st.session_state.running:
     ahora = datetime.datetime.now(zona_local)
-    prox_m = ((ahora.minute // m_in) + 1) * m_in
-    prox = ahora.replace(minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=prox_m)
+    
+    if modo == "Diario":
+        # Calcula la próxima ejecución para una hora y minuto específicos hoy o mañana
+        prox = ahora.replace(hour=h_in, minute=m_in, second=0, microsecond=0)
+        if ahora >= prox:
+            prox += datetime.timedelta(days=1)
+    else:
+        # Modo Periódico: mantiene la lógica de intervalos (cada X minutos)
+        prox_m = ((ahora.minute // m_in) + 1) * m_in
+        prox = ahora.replace(minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=prox_m)
+
     diff = prox - ahora
+    
+    # Mostrar el contador regresivo
     st.metric("⏳ PRÓXIMA CARGA EN:", str(diff).split('.')[0])
     
+    # Si el tiempo se cumple, ejecutar
     if diff.total_seconds() <= 1:
         st.session_state.last_logs = ejecutar_sincronizacion_total()
         st.rerun()
+        
     time.sleep(1)
     st.rerun()
+
