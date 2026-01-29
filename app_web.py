@@ -12,19 +12,28 @@ import numpy as np
 zona_local = pytz.timezone('America/Mexico_City')
 st.set_page_config(page_title="MIAA Control Maestro", layout="wide")
 
-# Credenciales consistentes con tu archivo original
+# Credenciales
 DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': 'h97_p,NQPo=l', 'database': 'miaamx_telemetria'}
 DB_INFORME = {'host': 'miaa.mx', 'user': 'miaamx_telemetria2', 'password': 'bWkrw1Uum1O&', 'database': 'miaamx_telemetria2'}
 DB_POSTGRES = {'user': 'map_tecnica', 'pass': 'M144.Tec', 'host': 'ti.miaa.mx', 'db': 'qgis', 'port': 5432}
 CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw/gviz/tq?tqx=out:csv&sheet=informe'
 
+# MAPEO DE POSTGRES ACTUALIZADO
 MAPEO_POSTGRES = {
-    'GASTO_(l.p.s.)': '_Caudal',
-    'PRESION_(kg/cm2)': '_Presion',
-    'LONGITUD_DE_COLUMNA': '_Long_colum',
-    'NIVEL_DINAMICO_(mts)': '_Nivel_Din',
-    'NIVEL_ESTATICO_(mts)': '_Nivel_Est',
-    'FECHA_ACTUALIZACION': '_Ultima_actualizacion'
+    'GASTO_(l.p.s.)':                  '_Caudal',
+    'PRESION_(kg/cm2)':                '_Presion',
+    'LONGITUD_DE_COLUMNA':             '_Long_colum',
+    'COLUMNA_DIAMETRO_1':              '_Diam_colum',
+    'TIPO_COLUMNA':                    '_Tipo_colum',
+    'SECTOR_HIDRAULICO':               '_Sector',
+    'NIVEL_DINAMICO_(mts)':            '_Nivel_Din',
+    'NIVEL_ESTATICO_(mts)':            '_Nivel_Est',
+    'EXTRACCION_MENSUAL_(m3)':         '_Vm_estr',
+    'HORAS_DE_OPERACIÓN_DIARIA_(hrs)': '_Horas_op',
+    'DISTRITO_1':                      '_Distrito',
+    'ESTATUS':                         '_Estatus',
+    'TELEMETRIA':                      '_Telemetria',
+    'FECHA_ACTUALIZACION':             '_Ultima_actualizacion'
 }
 
 MAPEO_SCADA = {
@@ -40,10 +49,9 @@ MAPEO_SCADA = {
     }
 }
 
-# --- 2. LÓGICA DE PROCESAMIENTO (Igual que Forzar Carga) ---
+# --- 2. LÓGICA DE PROCESAMIENTO ---
 
 def ejecutar_sincronizacion_total():
-    # Paso crítico: Limpiar logs de sesión al inicio para refrescar la consola
     st.session_state.last_logs = [] 
     logs = []
     progreso_bar = st.progress(0)
@@ -89,7 +97,7 @@ def ejecutar_sincronizacion_total():
         logs.append("✅ MySQL: Tabla INFORME actualizada.")
         progreso_bar.progress(75)
 
-        # 4. Postgres (QGIS)
+        # 4. Postgres (QGIS) con nuevo mapeo
         status_text.text("Sincronizando con QGIS...")
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
@@ -106,10 +114,14 @@ def ejecutar_sincronizacion_total():
                             else:
                                 if pg_col == '_Ultima_actualizacion':
                                     clean_val = raw_val.to_pydatetime() if hasattr(raw_val, 'to_pydatetime') else raw_val
+                                elif isinstance(raw_val, (int, float, np.number)):
+                                    clean_val = float(raw_val)
                                 else:
-                                    clean_val = float(raw_val) if isinstance(raw_val, (int, float, np.number)) else raw_val
+                                    clean_val = str(raw_val) # Para ESTATUS, SECTOR, etc.
+                            
                             params[pg_col] = clean_val
                             sets.append(f'"{pg_col}" = :{pg_col}')
+                    
                     if sets:
                         res = conn.execute(text(f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id'), params)
                         filas_pg += res.rowcount
@@ -144,11 +156,10 @@ with st.container(border=True):
         if st.button("🚀 FORZAR CARGA", use_container_width=True):
             st.session_state.last_logs = ejecutar_sincronizacion_total()
 
-# Consola
 log_txt = "<br>".join(st.session_state.get('last_logs', ["SISTEMA EN ESPERA..."]))
 st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:250px;overflow-y:auto;border-radius:5px;line-height:1.6;">{log_txt}</div>', unsafe_allow_html=True)
 
-# --- 4. RELOJ DE EJECUCIÓN UNIFICADO ---
+# --- 4. RELOJ DE EJECUCIÓN ---
 if st.session_state.running:
     ahora = datetime.datetime.now(zona_local)
     if modo == "Diario":
@@ -162,7 +173,6 @@ if st.session_state.running:
     diff = prox - ahora
     st.metric("⏳ PRÓXIMA CARGA EN:", str(diff).split('.')[0])
     
-    # La ejecución automática ahora llama exactamente al mismo proceso que el botón
     if diff.total_seconds() <= 1:
         st.session_state.last_logs = ejecutar_sincronizacion_total()
         st.rerun()
