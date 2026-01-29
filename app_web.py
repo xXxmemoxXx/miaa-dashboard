@@ -13,72 +13,147 @@ from google.oauth2.service_account import Credentials
 zona_local = pytz.timezone('America/Mexico_City')
 st.set_page_config(page_title="MIAA Control Maestro", layout="wide")
 
-# Credenciales (Fieles a tu respaldo)
-DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': st.secrets["db_scada"]["password"], 'database': 'miaamx_telemetria'}
-DB_INFORME = {'host': 'miaa.mx', 'user': 'miaamx_telemetria2', 'password': st.secrets["db_informe"]["password"], 'database': 'miaamx_telemetria2'}
-DB_POSTGRES = {'user': 'map_tecnica', 'pass': st.secrets["db_postgres"]["pass"], 'host': 'ti.miaa.mx', 'db': 'qgis', 'port': 5432}
+# Credenciales (Fieles a QGIS RESPALDO.py)
+DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': 'h97_p,NQPo=l', 'database': 'miaamx_telemetria'}
+DB_INFORME = {'host': 'miaa.mx', 'user': 'miaamx_telemetria2', 'password': 'bWkrw1Uum1O&', 'database': 'miaamx_telemetria2'}
+DB_POSTGRES = {'user': 'map_tecnica', 'pass': 'M144.Tec', 'host': 'ti.miaa.mx', 'db': 'qgis', 'port': 5432}
 
 SHEET_ID = '1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw'
 CSV_URL = f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=informe'
 
-# --- 2. LÓGICA DE PROCESAMIENTO (Valor > 0) ---
+# --- MAPEOS COMPLETOS RESTAURADOS ---
+MAPEO_SCADA = {
+    "P-002": {
+        "GASTO_(l.p.s.)":"PZ_002_TRC_CAU_INS",
+        "PRESION_(kg/cm2)":"PZ_002_TRC_PRES_INS",
+        "VOLTAJE_L1":"PZ_002_TRC_VOL_L1_L2",
+        "VOLTAJE_L2":"PZ_002_TRC_VOL_L2_L3",
+        "VOLTAJE_L3":"PZ_002_TRC_VOL_L1_L3",
+        "AMP_L1":"PZ_002_TRC_CORR_L1",
+        "AMP_L2":"PZ_002_TRC_CORR_L2",
+        "AMP_L3":"PZ_002_TRC_CORR_L3",
+        "LONGITUD_DE_COLUMNA":"PZ_002_TRC_LONG_COLUM",
+        "SUMERGENCIA":"PZ_002_TRC_SUMERG",
+        "NIVEL_DINAMICO":"PZ_002_TRC_NIV_EST",
+    },
+    "P-003": {
+        "GASTO_(l.p.s.)":"PZ_003_CAU_INS",
+        "PRESION_(kg/cm2)":"PZ_003_PRES_INS",
+        "VOLTAJE_L1":"PZ_003_VOL_L1_L2",
+        "VOLTAJE_L2":"PZ_003_VOL_L2_L3",
+        "VOLTAJE_L3":"PZ_003_VOL_L1_L3",
+        "AMP_L1":"PZ_003_CORR_L1",
+        "AMP_L2":"PZ_003_CORR_L2",
+        "AMP_L3":"PZ_003_CORR_L3",
+        "LONGITUD_DE_COLUMNA":"PZ_003_LONG_COLUM",
+        "SUMERGENCIA":"PZ_003_SUMERG",
+        "NIVEL_DINAMICO":"PZ_003_NIV_EST",
+    }
+}
+
+MAPEO_POSTGRES = {
+    'GASTO_(l.p.s.)':                  '_Caudal',
+    'PRESION_(kg/cm2)':                '_Presion',
+    'LONGITUD_DE_COLUMNA':             '_Long_colum',
+    'COLUMNA_DIAMETRO_1':              '_Diam_colum',
+    'TIPO_COLUMNA':                    '_Tipo_colum',
+    'SECTOR_HIDRAULICO':               '_Sector',
+    'NIVEL_DINAMICO_(mts)':            '_Nivel_Din',
+    'NIVEL_ESTATICO_(mts)':            '_Nivel_Est',
+    'EXTRACCION_MENSUAL_(m3)':         '_Vm_estr',
+    'HORAS_DE_OPERACIÓN_DIARIA_(hrs)': '_Horas_op',
+    'DISTRITO_1':                      '_Distrito',
+    'ESTATUS':                         '_Estatus',
+    'TELEMETRIA':                      '_Telemetria',
+    'FECHA_ACTUALIZACION':             '_Ultima_actualizacion',
+}
+
+# --- 2. FUNCIONES DE LÓGICA ---
+
+def limpiar_dato(v):
+    if pd.isna(v) or v == "" or str(v).lower() == "nan": return None
+    if isinstance(v, str):
+        v = v.replace(',', '').strip()
+        try: return float(v)
+        except: return v
+    return v
+
 def ejecutar_sincronizacion_total():
-    logs = [f"🚀 EJECUCIÓN: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}"]
+    logs = [f"🚀 INICIO: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}"]
     try:
         df = pd.read_csv(CSV_URL)
         df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
         df['ID'] = df['ID'].astype(str).str.strip()
 
+        # FASE SCADA: Solo valores > 0
         conn_s = mysql.connector.connect(**DB_SCADA)
         cur_s = conn_s.cursor(dictionary=True)
-        hay_cambio = False
+        hay_cambios = False
         
-        # Consulta SCADA para P-002
-        cur_s.execute("SELECT VALUE FROM vfitagnumhistory h JOIN VfiTagRef r ON h.GATEID = r.GATEID WHERE r.NAME = 'PZ_002_TRC_CAU_INS' ORDER BY h.FECHA DESC LIMIT 1")
-        res = cur_s.fetchone()
-        
-        if res and float(res['VALUE']) > 0:
-            val_f = round(float(res['VALUE']), 2)
-            df.loc[df['ID'] == 'P-002', 'GASTO_(l.p.s.)'] = val_f
-            hay_cambio = True
-            logs.append(f"✓ SCADA inyectó {val_f} (Valor válido).")
-        else:
-            logs.append("⚠ SCADA en 0 o Nulo. Hoja protegida (No se cambió nada).")
+        for p_id, config in MAPEO_SCADA.items():
+            for col_excel, tag_name in config.items():
+                cur_s.execute("SELECT h.VALUE FROM vfitagnumhistory h JOIN VfiTagRef r ON h.GATEID = r.GATEID WHERE r.NAME = %s ORDER BY h.FECHA DESC LIMIT 1", (tag_name,))
+                res = cur_s.fetchone()
+                if res and res['VALUE'] is not None:
+                    val_f = float(res['VALUE'])
+                    if val_f > 0:
+                        df.loc[df['POZOS'] == p_id, col_excel] = round(val_f, 2)
+                        hay_cambios = True
 
         cur_s.close(); conn_s.close()
 
-        if hay_cambio:
-            # Sincronización completa (Sheets, MySQL, Postgres)
-            creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=["https://www.googleapis.com/auth/spreadsheets"])
+        # ACTUALIZAR GOOGLE SHEETS
+        if hay_cambios:
+            scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+            creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
             client = gspread.authorize(creds)
             sheet = client.open_by_key(SHEET_ID).worksheet("informe")
             sheet.update('A1', [df.fillna('').columns.values.tolist()] + df.fillna('').values.tolist())
-            logs.append("✓ Sincronización exitosa en todos los sistemas.")
+            logs.append("✓ Google Sheets sincronizado.")
+
+        # MYSQL INFORME
+        engine_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{urllib.parse.quote_plus(DB_INFORME['password'])}@{DB_INFORME['host']}/{DB_INFORME['database']}")
+        with engine_my.begin() as conn:
+            conn.execute(text("TRUNCATE TABLE INFORME"))
+            db_cols = [r[0] for r in conn.execute(text("SHOW COLUMNS FROM INFORME"))]
+            df[df.columns.intersection(db_cols)].to_sql('INFORME', con=conn, if_exists='append', index=False)
+        logs.append("✓ MySQL actualizado.")
+
+        # POSTGRES (QGIS)
+        p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
+        engine_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
+        with engine_pg.begin() as conn:
+            for _, row in df.iterrows():
+                id_m = str(row['ID']).strip()
+                if not id_m or id_m == "nan": continue
+                params = {"id": id_m}
+                sets = []
+                for c_csv, c_pg in MAPEO_POSTGRES.items():
+                    if c_csv in df.columns:
+                        params[c_pg] = limpiar_dato(row[c_csv])
+                        sets.append(f'"{c_pg}" = :{c_pg}')
+                if sets:
+                    conn.execute(text(f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id'), params)
         
+        logs.append("✓ PostgreSQL (QGIS) actualizado.")
         return logs
     except Exception as e:
-        return [f"❌ Error crítico: {str(e)}"]
+        return [f"❌ Error: {str(e)}"]
 
-# --- 3. INTERFAZ RESTAURADA (Sin valores por defecto) ---
-st.title("🖥️ MIAA Control Center")
+# --- 3. INTERFAZ (TIEMPO VACÍO + SEGUNDEROS) ---
+st.title("🖥️ MIAA Data Center")
 
 with st.container(border=True):
     st.subheader("Configuración de Tiempo")
     c1, c2, c3, c4, c5 = st.columns([1.5, 1, 1, 1.5, 1.5])
     
-    with c1: 
-        modo = st.selectbox("Modo", ["Diario", "Periódico"], index=None, placeholder="Elija modo...")
-    with c2: 
-        # Iniciamos en None para que no haya valor por defecto
-        h_in = st.number_input("Hora", 0, 23, value=None, placeholder="--")
-    with c3: 
-        # Entrada de minutos libre y vacía al inicio
-        m_in = st.number_input("Min/Int", 0, 59, value=None, placeholder="--")
+    with c1: modo = st.selectbox("Modo", ["Diario", "Periódico"], index=None, placeholder="Elija modo...")
+    with c2: h_in = st.number_input("Hora", 0, 23, value=None, placeholder="--")
+    with c3: m_in = st.number_input("Min/Int", 0, 59, value=None, placeholder="--")
     
     with c4:
         if "running" not in st.session_state: st.session_state.running = False
         btn_label = "🛑 PARAR" if st.session_state.running else "▶️ INICIAR"
-        # Deshabilitar Iniciar si no hay valores puestos
         bloqueado = h_in is None or m_in is None or modo is None
         if st.button(btn_label, use_container_width=True, disabled=bloqueado):
             st.session_state.running = not st.session_state.running
@@ -88,11 +163,10 @@ with st.container(border=True):
         if st.button("🚀 FORZAR CARGA", use_container_width=True):
             st.session_state.last_logs = ejecutar_sincronizacion_total()
 
-# Consola Verde (Estilo ScrolledText)
-log_txt = "<br>".join(st.session_state.get('last_logs', ["SISTEMA EN ESPERA - INGRESE TIEMPO"]))
-st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:180px;overflow-y:auto;border-radius:5px;border: 1px solid #333;">{log_txt}</div>', unsafe_allow_html=True)
+# Consola Verde Original
+log_txt = "<br>".join(st.session_state.get('last_logs', ["SISTEMA EN ESPERA..."]))
+st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:200px;overflow-y:auto;border-radius:5px;">{log_txt}</div>', unsafe_allow_html=True)
 
-# LÓGICA DE SEGUNDEROS (Reloj de carga)
 if st.session_state.running:
     ahora = datetime.datetime.now(zona_local)
     if modo == "Diario":
